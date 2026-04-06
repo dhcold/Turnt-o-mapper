@@ -4,7 +4,7 @@ Turnt-o-mator — Quake 3 / Turnt Defrag Map Generator
 v2.0 — physics-driven layout, proper timer entities, 3D viewer
 """
 
-import random, os, math, threading, time
+import random, os, math, threading, time, json
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Tuple
 import tkinter as tk
@@ -657,14 +657,19 @@ def ent_brush_box(cls, x1,y1,z1, x2,y2,z2, target="", extra=None):
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN GENERATOR
 # ══════════════════════════════════════════════════════════════════════════════
-def generate_map(cfg: dict):
+def generate_layout(cfg: dict) -> Tuple[List["Room"], List["Bridge"]]:
+    """Phase 1: physics-driven layout only. Seeds random so textures are reproducible."""
     seed = cfg.get("seed")
     if seed is not None:
         random.seed(seed)
-
     rooms   = place_rooms(cfg["n_rooms"], cfg)
     bridges = build_bridges(rooms)
+    return rooms, bridges
 
+
+def build_map_string(rooms: List["Room"], bridges: List["Bridge"], cfg: dict) -> str:
+    """Phase 2: geometry + entity text. Does NOT re-seed — textures already baked into Room fields."""
+    seed = cfg.get("seed")
     lines = [
         "// Game: Quake 3",
         "// Format: Valve",
@@ -674,11 +679,10 @@ def generate_map(cfg: dict):
         '"mapversion" "220"',
         '"classname" "worldspawn"',
         '"_ambient" "15"',
-        f'"message" "{cfg.get("map_name","turnt_map")}"',
+        f'"message" "turnt_{seed}"',
     ]
 
     bi = 0
-    # Build per-room door cutout data from bridges (per-bridge door_hw)
     room_doors: Dict[int, list] = {i: [] for i in range(len(rooms))}
     for br in bridges:
         ra  = rooms[br.room_a]
@@ -727,8 +731,8 @@ def generate_map(cfg: dict):
                         angle="0"))
     ei += 1
 
-    # --- trigger_startTimer — box around spawn area (player hits it on circleJump)
-    sp = 128   # half-size of the spawn trigger pad
+    # --- trigger_startTimer
+    sp = 128
     lines.append(f"\n// entity {ei}")
     lines.append(ent_brush_box("trigger_startTimer",
         spawn_x - sp, spawn_y - sp, first.z1,
@@ -736,15 +740,14 @@ def generate_map(cfg: dict):
         target="start_t"))
     ei += 1
 
-    # --- target_startTimer (point entity)
+    # --- target_startTimer
     lines.append(f"\n// entity {ei}")
     lines.append(ent_kv(classname="target_startTimer",
                         origin=f"{spawn_x} {spawn_y} {first.z1 + DOOR_H // 2}",
                         targetname="start_t"))
     ei += 1
 
-    # --- trigger_stopTimer — slab across the exit wall of the last room
-    # place it near the end of the last room (80 % along travel axis)
+    # --- trigger_stopTimer
     if last.travel_axis == 'x':
         stop_x1 = last.x2 - 48;  stop_x2 = last.x2
         stop_y1 = last.y1;        stop_y2 = last.y2
@@ -758,25 +761,43 @@ def generate_map(cfg: dict):
         target="stop_t"))
     ei += 1
 
-    # --- target_stopTimer (point entity)
+    # --- target_stopTimer
     lines.append(f"\n// entity {ei}")
     lines.append(ent_kv(classname="target_stopTimer",
                         origin=f"{last.cx()} {last.cy()} {last.z1 + DOOR_H // 2}",
                         targetname="stop_t"))
     ei += 1
 
-    # --- checkpoints — trigger_checkpoint + target_checkpoint for rooms 1..N-1
-    if cfg.get("checkpoints", True):
-        for cp_n, room in enumerate(rooms[1:-1], start=1):
+    # --- checkpoints — 1 per 10 rooms, with timing guards
+    if cfg.get("checkpoints", True) and len(rooms) > 1:
+        # Estimate cumulative game time at entry of each room (uses actual positions)
+        t_cum = [0.0] * len(rooms)
+        for i in range(1, len(rooms)):
+            prev = rooms[i - 1]
+            dist = abs(rooms[i].cx() - prev.cx()) + abs(rooms[i].cy() - prev.cy())
+            t_cum[i] = t_cum[i - 1] + dist / max(prev.speed_in, 1.0)
+        last_len = last.w if last.travel_axis == 'x' else last.d
+        total_time = t_cum[-1] + last_len / max(last.speed_in, 1.0)
+
+        cp_n = 0
+        # Place at entry of room[10], room[20], ... (0-indexed rooms[9], rooms[19], ...)
+        for step_i in range(9, len(rooms) - 1, 10):
+            time_here   = t_cum[step_i + 1]
+            time_to_end = total_time - time_here
+            if time_here < 5.0:
+                continue   # too close to start
+            if time_to_end < 10.0:
+                continue   # too close to finish
+            cp_n += 1
+            room  = rooms[step_i + 1]
             tname = f"cp{cp_n}_t"
 
-            # trigger_checkpoint brush — spans the entry cross-section of room
             if room.travel_axis == 'x':
-                tx1 = room.x1;       tx2 = room.x1 + 48
-                ty1 = room.y1;       ty2 = room.y2
+                tx1 = room.x1;  tx2 = room.x1 + 48
+                ty1 = room.y1;  ty2 = room.y2
             else:
-                tx1 = room.x1;       tx2 = room.x2
-                ty1 = room.y1;       ty2 = room.y1 + 48
+                tx1 = room.x1;  tx2 = room.x2
+                ty1 = room.y1;  ty2 = room.y1 + 48
             lines.append(f"\n// entity {ei}")
             lines.append(ent_brush_box("trigger_checkpoint",
                 tx1, ty1, room.z1,
@@ -784,7 +805,6 @@ def generate_map(cfg: dict):
                 target=tname))
             ei += 1
 
-            # target_checkpoint (point entity)
             lines.append(f"\n// entity {ei}")
             lines.append(ent_kv(classname="target_checkpoint",
                                 origin=f"{room.cx()} {room.cy()} {room.z1 + DOOR_H // 2}",
@@ -792,7 +812,7 @@ def generate_map(cfg: dict):
                                 count=str(cp_n)))
             ei += 1
 
-    return "\n".join(lines), rooms, bridges
+    return "\n".join(lines)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  3D VIEWER
@@ -1000,6 +1020,28 @@ class Viewer3D(tk.Canvas):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  PROFILE PERSISTENCE
+# ══════════════════════════════════════════════════════════════════════════════
+CONFIG_PATH = os.path.join(
+    os.environ.get("APPDATA", os.path.expanduser("~")),
+    "turnt-o-mapper", "config.json")
+
+def load_profile() -> dict:
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_profile(data: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass  # profile save failure is non-fatal
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  GUI
 # ══════════════════════════════════════════════════════════════════════════════
 IMG_EXTS = {".jpg",".jpeg",".png",".bmp",".tga",".gif",".tiff"}
@@ -1011,14 +1053,21 @@ class App(tk.Tk):
         self.configure(bg=T["bg"])
         self.minsize(1200, 750)
         self.resizable(True, True)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self._profile = load_profile()
 
         self._map_str   = ""
         self._rooms:   List[Room]   = []
         self._bridges: List[Bridge] = []
+        self._cfg_snapshot: dict = {}
+        self._has_preview:  bool = False
 
-        self._tex_folder = tk.StringVar(value="")
+        self._game_folder = tk.StringVar(
+            value=self._profile.get("game_folder", ""))
         self._out_path   = tk.StringVar(
-            value=os.path.join(os.getcwd(), "generated.map"))
+            value=self._profile.get("output_path",
+                                    os.path.join(os.getcwd(), "generated.map")))
         self._tex_paths: Dict[str, str]    = {}   # tex_name → abs file path
         self._thumb_refs: Dict[str, object] = {}  # keep ImageTk alive
 
@@ -1030,7 +1079,15 @@ class App(tk.Tk):
         self._build_styles()
         self._build_ui()
         self._randomize_seed(silent=True)
-        self._log("Turnt-o-mator ready. Configure and hit Generate!", "info")
+        self._log("Turnt-o-mator ready. Configure and hit Preview Layout!", "info")
+
+        # Auto-scan textures if we have a saved game folder
+        gf = self._game_folder.get()
+        if gf:
+            tex_dir = self._derive_tex_folder()
+            if os.path.isdir(tex_dir):
+                threading.Thread(target=self._scan_tex_folder,
+                                 args=(tex_dir,), daemon=True).start()
 
     # ── styles ────────────────────────────────────────────────────────────────
     def _build_styles(self):
@@ -1107,9 +1164,9 @@ class App(tk.Tk):
         nb = ttk.Notebook(p)
         nb.pack(fill="both", expand=True)
 
-        t1 = ttk.Frame(nb, style="P.TFrame", padding=8)
-        t2 = ttk.Frame(nb, style="P.TFrame", padding=8)
-        t3 = ttk.Frame(nb, style="P.TFrame", padding=8)
+        t1 = ttk.Frame(nb, style="P.TFrame", padding=(12, 10))
+        t2 = ttk.Frame(nb, style="P.TFrame", padding=(12, 10))
+        t3 = ttk.Frame(nb, style="P.TFrame", padding=(12, 10))
         nb.add(t1, text="  Layout  ")
         nb.add(t2, text="  Textures  ")
         nb.add(t3, text="  Options  ")
@@ -1119,9 +1176,10 @@ class App(tk.Tk):
         self._tab_options(t3)
 
         # Output file
-        ttk.Separator(p).pack(fill="x", pady=(10, 6))
-        ttk.Label(p, text="Output file", style="P.TLabel",
-                  font=("Segoe UI", 8, "bold")).pack(anchor="w")
+        tk.Frame(p, bg=T["border"], height=1).pack(fill="x", pady=(10, 6))
+        tk.Label(p, text="OUTPUT FILE",
+                 bg=T["bg_panel"], fg=T["accent"],
+                 font=("Segoe UI", 7, "bold")).pack(anchor="w")
         row = ttk.Frame(p, style="P.TFrame")
         row.pack(fill="x", pady=(3, 0))
         ttk.Entry(row, textvariable=self._out_path,
@@ -1132,20 +1190,27 @@ class App(tk.Tk):
         # Action buttons
         bf = ttk.Frame(p, style="P.TFrame")
         bf.pack(fill="x", pady=(10, 0))
-        self._btn(bf, "Generate map", self._on_generate,
+
+        self._btn_preview = self._btn(bf, "Preview Layout", self._on_preview,
                   color=T["accent"],
-                  font=("Segoe UI", 11, "bold")).pack(fill="x", pady=(0, 8))
-        r2 = ttk.Frame(bf, style="P.TFrame")
-        r2.pack(fill="x")
-        self._btn(r2, "Save", self._on_save,
-                  color=T["success"]).pack(side="left", fill="x",
-                                           expand=True, padx=(0, 4))
-        self._btn(r2, "New seed", self._randomize_seed,
-                  color=T["accent2"]).pack(side="left", fill="x", expand=True)
+                  font=("Segoe UI", 11, "bold"))
+        self._btn_preview.pack(fill="x", pady=(0, 6))
+
+        self._btn_export = self._btn(bf, "Export .map", self._on_export,
+                  color=T["success"],
+                  font=("Segoe UI", 10, "bold"))
+        self._btn_export.pack(fill="x", pady=(0, 8))
+        self._btn_export.config(state="disabled",
+                                bg=T["bg_card"],
+                                activebackground=T["bg_card"],
+                                fg=T["text_dim"])
+
+        self._btn(bf, "New seed", self._randomize_seed,
+                  color=T["accent2"]).pack(fill="x")
 
         # ─ Tab: Layout ─────────────────────────────────────────────────────
     def _tab_layout(self, p):
-        self._v_rooms = tk.IntVar(value=6)
+        self._v_rooms = tk.IntVar(value=self._profile.get("last_n_rooms", 6))
         self._slider(p, "Number of rooms", self._v_rooms, 2, 30)
 
         # ── Physics & layout ─────────────────────────────────────────────────
@@ -1177,7 +1242,7 @@ class App(tk.Tk):
         ls_row.grid(row=3, column=0, columnspan=2, padx=3, pady=2, sticky="ew")
         ttk.Label(ls_row, text="Layout style", style="P.TLabel",
                   font=("Segoe UI", 7)).pack(anchor="w")
-        self._v_layout = tk.StringVar(value="Zigzag")
+        self._v_layout = tk.StringVar(value=self._profile.get("last_layout_style", "Zigzag"))
         om = tk.OptionMenu(ls_row, self._v_layout, "Linear", "Zigzag", "Spiral")
         om.config(bg=T["bg_input"], fg=T["text"], activebackground=T["lbx_sel"],
                   relief="flat", font=("Segoe UI", 9), highlightthickness=0)
@@ -1221,20 +1286,20 @@ class App(tk.Tk):
                                         state="disabled", pack=False)
         self._seed_spin.pack(side="left", padx=(8, 0))
 
-        self._sec(p, "Map name")
-        self._v_mapname = tk.StringVar(value="turnt_run")
-        ttk.Entry(p, textvariable=self._v_mapname,
-                  font=("Consolas", 9)).pack(fill="x", pady=(0, 4))
 
     # ─ Tab: Textures ──────────────────────────────────────────────────
     def _tab_textures(self, p):
-        self._sec(p, "Texture folder (optional)")
+        self._sec(p, "Game folder")
         fr = ttk.Frame(p, style="P.TFrame")
-        fr.pack(fill="x", pady=(0, 2))
-        ttk.Entry(fr, textvariable=self._tex_folder,
+        fr.pack(fill="x", pady=(0, 0))
+        ttk.Entry(fr, textvariable=self._game_folder,
                   font=("Consolas", 7)).pack(side="left", fill="x", expand=True)
-        self._btn(fr, "📂", self._browse_tex_folder, w=3,
+        self._btn(fr, "📂", self._browse_game_folder, w=3,
                   color=T["accent2"]).pack(side="left", padx=(3, 0))
+        tk.Label(p,
+                 text="Auto-detects textures from baseq3/textures",
+                 bg=T["bg_panel"], fg=T["text_dim"],
+                 font=("Segoe UI", 7)).pack(anchor="w", pady=(1, 6))
 
         tk.Label(p,
                  text="F = use as Floor   W = Wall   C = Ceiling",
@@ -1367,7 +1432,7 @@ class App(tk.Tk):
             pass
 
     def _find_tex_file(self, tex_name) -> Optional[str]:
-        folder = self._tex_folder.get()
+        folder = self._derive_tex_folder()
         if not folder or not os.path.isdir(folder):
             return None
         base = tex_name.split("/")[-1]
@@ -1404,14 +1469,38 @@ class App(tk.Tk):
             self._prev_lbl.config(image="", text=f"Error:\n{ex}",
                                   fg=T["warning"])
 
-    def _browse_tex_folder(self):
-        d = filedialog.askdirectory(title="Select texture folder")
+    def _derive_tex_folder(self) -> str:
+        return os.path.join(self._game_folder.get(), "baseq3", "textures")
+
+    def _save_profile(self):
+        save_profile({
+            "game_folder":       self._game_folder.get(),
+            "output_path":       self._out_path.get(),
+            "last_layout_style": self._v_layout.get() if hasattr(self, "_v_layout") else "Zigzag",
+            "last_n_rooms":      self._v_rooms.get() if hasattr(self, "_v_rooms") else 6,
+        })
+
+    def _on_close(self):
+        self._save_profile()
+        self.destroy()
+
+    def _browse_game_folder(self):
+        d = filedialog.askdirectory(title="Select game folder (e.g. C:\\Games\\Quake3Arena)")
         if d:
-            self._tex_folder.set(d)
-            self._tex_paths.clear()
-            self._status.config(text="Scanning texture folder…")
-            threading.Thread(target=self._scan_tex_folder,
-                             args=(d,), daemon=True).start()
+            self._game_folder.set(d)
+            self._save_profile()
+            tex_dir = self._derive_tex_folder()
+            if os.path.isdir(tex_dir):
+                self._tex_paths.clear()
+                self._status.config(text=f"Scanning {tex_dir}…")
+                threading.Thread(target=self._scan_tex_folder,
+                                 args=(tex_dir,), daemon=True).start()
+            else:
+                self._log(f"Texture folder not found: {tex_dir}", "warn")
+
+    def _browse_tex_folder(self):
+        # Legacy: kept so _browse_game_folder replaces it in the tab
+        pass
 
     def _scan_tex_folder(self, folder):
         found = {}
@@ -1512,6 +1601,10 @@ class App(tk.Tk):
         ph = ttk.Frame(pc, style="P.TFrame", padding=(10, 6))
         ph.grid(row=0, column=0, sticky="ew")
         ttk.Label(ph, text="MAP PREVIEW", style="H2.TLabel").pack(side="left")
+        self._lbl_flow_state = tk.Label(ph, text="● No preview",
+            bg=T["bg_panel"], fg=T["text_dim"],
+            font=("Segoe UI", 8, "bold"))
+        self._lbl_flow_state.pack(side="right", padx=(0, 12))
         self._lbl_stats = ttk.Label(ph, text="", style="Pd.TLabel",
                                     font=("Segoe UI", 8))
         self._lbl_stats.pack(side="right")
@@ -1622,11 +1715,13 @@ class App(tk.Tk):
             min(255, int(b+(255-b)*f)))
 
     def _sec(self, p, text):
-        f = ttk.Frame(p, style="P.TFrame")
-        f.pack(fill="x", pady=(8, 3))
-        ttk.Label(f, text=text, style="H2.TLabel").pack(side="left")
-        ttk.Separator(f, orient="horizontal").pack(
-            side="left", fill="x", expand=True, padx=(8, 0))
+        f = tk.Frame(p, bg=T["bg_panel"])
+        f.pack(fill="x", pady=(10, 4))
+        tk.Label(f, text=text.upper(),
+                 bg=T["bg_panel"], fg=T["accent"],
+                 font=("Segoe UI", 7, "bold")).pack(side="left")
+        tk.Frame(f, bg=T["border"], height=1).pack(
+            side="left", fill="x", expand=True, padx=(8, 0), pady=6)
 
     def _slider(self, p, label, var, lo, hi, step=1):
         row = ttk.Frame(p, style="P.TFrame")
@@ -1679,6 +1774,7 @@ class App(tk.Tk):
             initialfile=os.path.basename(self._out_path.get()))
         if p:
             self._out_path.set(p)
+            self._save_profile()
 
     def _log(self, msg, level="plain"):
         self._logbox.config(state="normal")
@@ -1717,17 +1813,16 @@ class App(tk.Tk):
             "layout_style":   self._v_layout.get(),
             # misc
             "seed":         self._v_seed.get(),
-            "map_name":     self._v_mapname.get(),
             "height_var":   self._v_height.get(),
             "checkpoints":  self._v_checks.get(),
         }
 
-    def _on_generate(self):
+    def _on_preview(self):
+        self._disable_export()
         def run():
             try:
                 cfg = self._collect_cfg()
 
-                # Basic validation
                 errs = []
                 if cfg["min_w"] >= cfg["max_w"]: errs.append("Min W must be < Max W")
                 if cfg["min_d"] >= cfg["max_d"]: errs.append("Min D must be < Max D")
@@ -1738,31 +1833,30 @@ class App(tk.Tk):
 
                 u_end = cfg["u_base"] + (cfg["n_rooms"]-1) * cfg["u_gain"]
                 self._log(
-                    f"Generating {cfg['n_rooms']} rooms | "
+                    f"Laying out {cfg['n_rooms']} rooms | "
                     f"u: {cfg['u_base']:.0f}→{u_end:.0f} UPS | "
                     f"layout: {cfg['layout_style']} | seed {cfg['seed']}…",
                     "info")
                 t0 = time.perf_counter()
-                ms, rooms, bridges = generate_map(cfg)
+                rooms, bridges = generate_layout(cfg)
                 dt = time.perf_counter() - t0
 
-                self._map_str = ms
-                self._rooms   = rooms
-                self._bridges = bridges
+                self._rooms          = rooms
+                self._bridges        = bridges
+                self._cfg_snapshot   = cfg
+                self._has_preview    = True
 
                 nb = len(rooms)*6 + len(bridges)*4
-                kb = len(ms.encode()) / 1024
                 self._log(
-                    f"Done in {dt:.2f}s — {len(rooms)} rooms, "
-                    f"{len(bridges)} bridges, ~{nb} brushes, {kb:.1f} KB",
+                    f"Layout ready in {dt:.3f}s — {len(rooms)} rooms, "
+                    f"{len(bridges)} bridges, ~{nb} brushes  ·  export when happy",
                     "info")
                 self._lbl_stats.config(
-                    text=f"rooms={len(rooms)}  bridges={len(bridges)}"
-                         f"  brushes≈{nb}  {kb:.1f} KB")
+                    text=f"rooms={len(rooms)}  bridges={len(bridges)}  brushes≈{nb}")
 
                 self.after(0, self._redraw)
                 self.after(0, lambda: self._viewer3d.load(self._rooms, self._bridges))
-                self.after(0, self._do_save)
+                self.after(0, self._enable_export)
 
                 if self._v_autorand.get():
                     self.after(200, self._randomize_seed)
@@ -1773,19 +1867,50 @@ class App(tk.Tk):
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _on_save(self):
-        if not self._map_str:
-            self._log("Nothing to save — generate first.", "warn")
+    def _on_export(self):
+        if not self._rooms:
+            self._log("Generate a preview first.", "warn")
             return
-        self._do_save(manual=True)
+        def run():
+            try:
+                t0 = time.perf_counter()
+                ms = build_map_string(self._rooms, self._bridges, self._cfg_snapshot)
+                dt = time.perf_counter() - t0
+                self._map_str = ms
+                kb = len(ms.encode()) / 1024
+                self._log(f"Map built in {dt:.3f}s — {kb:.1f} KB", "info")
+                self.after(0, self._do_save)
+            except Exception as ex:
+                import traceback; traceback.print_exc()
+                self._log(f"Export error: {ex}", "error")
 
-    def _do_save(self, manual=False):
+        threading.Thread(target=run, daemon=True).start()
+
+    def _enable_export(self):
+        lit = self._lighten(T["success"], 0.15)
+        self._btn_export.config(state="normal",
+                                bg=T["success"], fg=T["btn_fg"],
+                                activebackground=lit,
+                                activeforeground=T["btn_fg"])
+        self._btn_export.bind("<Enter>", lambda e: self._btn_export.config(bg=lit))
+        self._btn_export.bind("<Leave>", lambda e: self._btn_export.config(bg=T["success"]))
+        self._lbl_flow_state.config(text="● Preview ready", fg=T["warning"])
+
+    def _disable_export(self):
+        self._btn_export.config(state="disabled",
+                                bg=T["bg_card"],
+                                activebackground=T["bg_card"],
+                                fg=T["text_dim"])
+        self._lbl_flow_state.config(text="● No preview", fg=T["text_dim"])
+
+    def _do_save(self):
         path = self._out_path.get()
         try:
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(self._map_str)
-            self._log(f"{'Saved' if manual else 'Auto-saved'}: {path}", "info")
+            self._log(f"Saved: {path}", "info")
+            self._lbl_flow_state.config(text="● Exported ✓", fg=T["success"])
         except Exception as e:
             self._log(f"Save error: {e}", "error")
 
@@ -1798,7 +1923,7 @@ class App(tk.Tk):
             return
         if not self._rooms:
             c.create_text(W//2, H//2,
-                          text="Press Generate map to see preview",
+                          text="Press Preview Layout to see preview",
                           fill=T["text_dim"],
                           font=("Segoe UI", 12), justify="center")
             return
