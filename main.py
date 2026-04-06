@@ -53,7 +53,7 @@ WALL_TEX   = ["turnt/turnt_concrete","turnt/turnt_tech","turnt/turnt_white",
                "turnt/turnt_cyan","turnt/turnt_mint","turnt/turnt_violet"]
 CEIL_TEX   = ["turnt/turnt_sky","turnt/turnt_white","turnt/turnt_tech","common/nodraw"]
 HIDDEN_TEX = "common/caulk"
-NODRAW_TEX = "common/nodrawnonsolid"
+NODRAW_TEX = "common/trigger"
 
 WALL_T  = 16
 DOOR_W  = 128
@@ -731,20 +731,20 @@ def build_map_string(rooms: List["Room"], bridges: List["Bridge"], cfg: dict) ->
                         angle="0"))
     ei += 1
 
-    # --- trigger_startTimer
+    # --- trigger startTimer
     sp = 128
     lines.append(f"\n// entity {ei}")
-    lines.append(ent_brush_box("trigger_startTimer",
+    lines.append(ent_brush_box("trigger_multiple",
         spawn_x - sp, spawn_y - sp, first.z1,
         spawn_x + sp, spawn_y + sp, first.z1 + DOOR_H,
-        target="start_t"))
+        target="target_startTimer"))
     ei += 1
 
     # --- target_startTimer
     lines.append(f"\n// entity {ei}")
     lines.append(ent_kv(classname="target_startTimer",
                         origin=f"{spawn_x} {spawn_y} {first.z1 + DOOR_H // 2}",
-                        targetname="start_t"))
+                        targetname="target_startTimer"))
     ei += 1
 
     # --- trigger_stopTimer
@@ -755,17 +755,17 @@ def build_map_string(rooms: List["Room"], bridges: List["Bridge"], cfg: dict) ->
         stop_x1 = last.x1;        stop_x2 = last.x2
         stop_y1 = last.y2 - 48;  stop_y2 = last.y2
     lines.append(f"\n// entity {ei}")
-    lines.append(ent_brush_box("trigger_stopTimer",
+    lines.append(ent_brush_box("trigger_multiple",
         stop_x1, stop_y1, last.z1,
         stop_x2, stop_y2, last.z1 + DOOR_H,
-        target="stop_t"))
+        target="target_stopTimer"))
     ei += 1
 
     # --- target_stopTimer
     lines.append(f"\n// entity {ei}")
     lines.append(ent_kv(classname="target_stopTimer",
                         origin=f"{last.cx()} {last.cy()} {last.z1 + DOOR_H // 2}",
-                        targetname="stop_t"))
+                        targetname="target_stopTimer"))
     ei += 1
 
     # --- checkpoints — 1 per 10 rooms, with timing guards
@@ -799,7 +799,7 @@ def build_map_string(rooms: List["Room"], bridges: List["Bridge"], cfg: dict) ->
                 tx1 = room.x1;  tx2 = room.x2
                 ty1 = room.y1;  ty2 = room.y1 + 48
             lines.append(f"\n// entity {ei}")
-            lines.append(ent_brush_box("trigger_checkpoint",
+            lines.append(ent_brush_box("trigger_multiple",
                 tx1, ty1, room.z1,
                 tx2, ty2, room.z1 + DOOR_H,
                 target=tname))
