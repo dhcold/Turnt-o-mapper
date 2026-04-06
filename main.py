@@ -1593,7 +1593,7 @@ class App(tk.Tk):
                  font=("Consolas", 7), justify="left").pack(anchor="w", pady=4)
 
     # ── RIGHT PANEL ───────────────────────────────────────────────────────────
-        def _build_right(self, p):
+    def _build_right(self, p):
         # ── top section: tabbed previews (2D + 3D)
         pc = ttk.Frame(p, style="P.TFrame")
         pc.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
