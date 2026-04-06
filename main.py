@@ -182,23 +182,23 @@ def hollow_box(x1,y1,z1, x2,y2,z2,
             rb(xc+hw, by1, z_b, bx2,   by2, z_t,  lbl=f"{wall_name}_r",   **face_kw)
 
         # Floor and ceiling always span the full outer footprint
-    rb(ox1,oy1,oz1, ox2,oy2,z1,  pz=floor_t, lbl="floor")
-    rb(ox1,oy1,z2,  ox2,oy2,oz2, nz=ceil_t,  lbl="ceil")
+    rb(ox1,oy1,oz1, ox2,oy2,z1,  nx=floor_t,px=floor_t,ny=floor_t,py=floor_t,nz=hid,pz=floor_t, lbl="floor")
+    rb(ox1,oy1,z2,  ox2,oy2,oz2, nx=ceil_t,px=ceil_t,ny=ceil_t,py=ceil_t,nz=ceil_t,pz=hid, lbl="ceil")
 
     # Side outer shells.
     # On sides that have a door the outer caulk shell is collapsed to zero
     # thickness (ax1==ax2) so rb() skips it entirely — this prevents the
     # caulk slab of this room from co-planar-overlapping the slab of the
     # neighbour room (texture fighting / z-fighting at the seam).
-    wx1_outer_x2 = x1  if 'wx1' in has_door else ox1   # shrink to nothing when door
-    wx2_outer_x1 = x2  if 'wx2' in has_door else ox2
-    wy1_outer_y2 = y1  if 'wy1' in has_door else oy1
-    wy2_outer_y1 = y2  if 'wy2' in has_door else oy2
+    wx1_outer_x2 = ox1 if 'wx1' in has_door else x1   # door side: collapse to 0 (no z-fight)
+    wx2_outer_x1 = ox2 if 'wx2' in has_door else x2
+    wy1_outer_y2 = oy1 if 'wy1' in has_door else y1
+    wy2_outer_y1 = oy2 if 'wy2' in has_door else y2
 
-    wall_y(ox1,          wx1_outer_x2, y1,y2, z1,z2, 'wx1', px=wall_t)
-    wall_y(wx2_outer_x1, ox2,          y1,y2, z1,z2, 'wx2', nx=wall_t)
-    wall_x(ox1,ox2, oy1,          wy1_outer_y2, z1,z2, 'wy1', py=wall_t)
-    wall_x(ox1,ox2, wy2_outer_y1, oy2,          z1,z2, 'wy2', ny=wall_t)
+    wall_y(ox1,          wx1_outer_x2, y1,y2, z1,z2, 'wx1', nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t)
+    wall_y(wx2_outer_x1, ox2,          y1,y2, z1,z2, 'wx2', nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t)
+    wall_x(ox1,ox2, oy1,          wy1_outer_y2, z1,z2, 'wy1', nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t)
+    wall_x(ox1,ox2, wy2_outer_y1, oy2,          z1,z2, 'wy2', nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t)
 
     return parts, bi
 
@@ -265,26 +265,24 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
         """Wedge brush for axis-X ramp: floor rises from zlo@xlo to zhi@xhi."""
         nonlocal bi
         bot = z_lo - H
-        # 5 planes:
-        # 1) bottom  (flat, z=bot, normal +Z)
+        # 1) bottom  (flat, z=bot, normal +Z) — buried, caulk OK
         f1 = face((xlo,ylo,bot),(xhi,ylo,bot),(xlo,yhi,bot),
                   hid, (-1,0,0),0,(0,-1,0),0)
-        # 2) slope   (normal points roughly +Z, tilted): three points on the slope
-        #    p = (xlo,ylo,zlo), (xhi,ylo,zhi), (xlo,yhi,zlo)
+        # 2) slope — visible to player
         f2 = face((xlo,ylo,zlo),(xlo,yhi,zlo),(xhi,ylo,zhi),
                   f_tex, (0,1,0),0,(0,0,-1),0)
-        # 3) low-X wall  (normal -X, i.e. faces inward from xlo side)
+        # 3) low-X end cap
         f3 = face((xlo,ylo,bot),(xlo,ylo,zlo),(xlo,yhi,bot),
-                  hid, (0,1,0),0,(0,0,-1),0)
-        # 4) high-X wall (normal +X)
+                  wall_t, (0,1,0),0,(0,0,-1),0)
+        # 4) high-X end cap
         f4 = face((xhi,yhi,bot),(xhi,yhi,zhi),(xhi,ylo,bot),
-                  hid, (0,-1,0),0,(0,0,-1),0)
-        # 5) side -Y (normal +Y)
+                  wall_t, (0,-1,0),0,(0,0,-1),0)
+        # 5) side -Y
         f5 = face((xlo,ylo,bot),(xhi,ylo,bot),(xhi,ylo,zhi),
-                  hid, (-1,0,0),0,(0,0,-1),0)
-        # 6) side +Y (normal -Y)
+                  wall_t, (-1,0,0),0,(0,0,-1),0)
+        # 6) side +Y
         f6 = face((xlo,yhi,bot),(xlo,yhi,zlo),(xhi,yhi,bot),
-                  hid, (1,0,0),0,(0,0,-1),0)
+                  wall_t, (1,0,0),0,(0,0,-1),0)
         parts.append(write_brush([f1,f2,f3,f4,f5,f6], f"brush {bi} {tag}_{lbl}"))
         bi += 1
 
@@ -297,13 +295,13 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
         f2 = face((xlo,ylo,zlo),(xhi,ylo,zlo),(xlo,yhi,zhi),
                   f_tex, (1,0,0),0,(0,0,-1),0)
         f3 = face((xlo,ylo,bot),(xlo,yhi,bot),(xlo,ylo,zlo),
-                  hid, (0,-1,0),0,(0,0,-1),0)
+                  wall_t, (0,-1,0),0,(0,0,-1),0)
         f4 = face((xhi,yhi,bot),(xhi,ylo,bot),(xhi,yhi,zhi),
-                  hid, (0,1,0),0,(0,0,-1),0)
+                  wall_t, (0,1,0),0,(0,0,-1),0)
         f5 = face((xlo,ylo,bot),(xlo,ylo,zlo),(xhi,ylo,bot),
-                  hid, (0,0,-1),0,(1,0,0),0)
+                  wall_t, (0,0,-1),0,(1,0,0),0)
         f6 = face((xlo,yhi,bot),(xhi,yhi,bot),(xlo,yhi,zhi),
-                  hid, (0,0,1),0,(1,0,0),0)
+                  wall_t, (0,0,1),0,(1,0,0),0)
         parts.append(write_brush([f1,f2,f3,f4,f5,f6], f"brush {bi} {tag}_{lbl}"))
         bi += 1
 
@@ -315,16 +313,13 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
         else:
             wedge_x(xmn, xmx, cy-hw, cy+hw, z_hi, z_lo, floor_t, "ramp_fl")
 
-        # ceiling: sloped box matching the ramp, generous height
-        cb(xmn, cy-hw, z_lo+DOOR_H, xmx, cy+hw, z_hi+DOOR_H+H,
-           nz=ceil_t, lbl="ramp_ce") if z_lo!=z_hi else None
-        # flat ceiling covering full span
+        # flat ceiling at the high end — gives DOOR_H clearance throughout
         cb(xmn, cy-hw, ceil_top, xmx, cy+hw, ceil_top+H,
-           nz=ceil_t, lbl="ce")
+           nx=ceil_t,px=ceil_t,ny=ceil_t,py=ceil_t,nz=ceil_t,pz=hid, lbl="ce")
 
         # side walls — full height so ramp is enclosed
-        cb(xmn, cy-hw-H, z_lo-H, xmx, cy-hw, ceil_top+H, py=wall_t, lbl="w1")
-        cb(xmn, cy+hw,   z_lo-H, xmx, cy+hw+H, ceil_top+H, ny=wall_t, lbl="w2")
+        cb(xmn, cy-hw-H, z_lo-H, xmx, cy-hw, ceil_top+H, nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w1")
+        cb(xmn, cy+hw,   z_lo-H, xmx, cy+hw+H, ceil_top+H, nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w2")
 
     else:  # axis == 'y'
         if going_up:
@@ -333,9 +328,9 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
             wedge_y(ymn, ymx, cx-hw, cx+hw, z_hi, z_lo, floor_t, "ramp_fl")
 
         cb(cx-hw, ymn, ceil_top, cx+hw, ymx, ceil_top+H,
-           nz=ceil_t, lbl="ce")
-        cb(cx-hw-H, ymn, z_lo-H, cx-hw,   ymx, ceil_top+H, px=wall_t, lbl="w1")
-        cb(cx+hw,   ymn, z_lo-H, cx+hw+H, ymx, ceil_top+H, nx=wall_t, lbl="w2")
+           nx=ceil_t,px=ceil_t,ny=ceil_t,py=ceil_t,nz=ceil_t,pz=hid, lbl="ce")
+        cb(cx-hw-H, ymn, z_lo-H, cx-hw,   ymx, ceil_top+H, nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w1")
+        cb(cx+hw,   ymn, z_lo-H, cx+hw+H, ymx, ceil_top+H, nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w2")
 
     return parts, bi
 
@@ -374,17 +369,17 @@ def corridor_brushes(ax,ay,az, bx,by,bz,
     if axis == 'x':
         xmn, xmx = min(ax,bx), max(ax,bx)
         cy = (ay + by) // 2
-        cb(xmn, cy-hw,   zf-H, xmx, cy+hw,   zf,   pz=floor_t, lbl="fl")
-        cb(xmn, cy-hw,   zc,   xmx, cy+hw,   zc+H, nz=ceil_t,  lbl="ce")
-        cb(xmn, cy-hw-H, zf,   xmx, cy-hw,   zc,   py=wall_t,  lbl="w1")
-        cb(xmn, cy+hw,   zf,   xmx, cy+hw+H, zc,   ny=wall_t,  lbl="w2")
+        cb(xmn, cy-hw,   zf-H, xmx, cy+hw,   zf,   nx=floor_t,px=floor_t,ny=floor_t,py=floor_t,nz=hid,pz=floor_t, lbl="fl")
+        cb(xmn, cy-hw,   zc,   xmx, cy+hw,   zc+H, nx=ceil_t,px=ceil_t,ny=ceil_t,py=ceil_t,nz=ceil_t,pz=hid, lbl="ce")
+        cb(xmn, cy-hw-H, zf,   xmx, cy-hw,   zc,   nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w1")
+        cb(xmn, cy+hw,   zf,   xmx, cy+hw+H, zc,   nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w2")
     else:
         cx = (ax + bx) // 2
         ymn, ymx = min(ay,by), max(ay,by)
-        cb(cx-hw,   ymn, zf-H, cx+hw,   ymx, zf,   pz=floor_t, lbl="fl")
-        cb(cx-hw,   ymn, zc,   cx+hw,   ymx, zc+H, nz=ceil_t,  lbl="ce")
-        cb(cx-hw-H, ymn, zf,   cx-hw,   ymx, zc,   px=wall_t,  lbl="w1")
-        cb(cx+hw,   ymn, zf,   cx+hw+H, ymx, zc,   nx=wall_t,  lbl="w2")
+        cb(cx-hw,   ymn, zf-H, cx+hw,   ymx, zf,   nx=floor_t,px=floor_t,ny=floor_t,py=floor_t,nz=hid,pz=floor_t, lbl="fl")
+        cb(cx-hw,   ymn, zc,   cx+hw,   ymx, zc+H, nx=ceil_t,px=ceil_t,ny=ceil_t,py=ceil_t,nz=ceil_t,pz=hid, lbl="ce")
+        cb(cx-hw-H, ymn, zf,   cx-hw,   ymx, zc,   nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w1")
+        cb(cx+hw,   ymn, zf,   cx+hw+H, ymx, zc,   nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w2")
 
     return parts, bi
 
@@ -475,8 +470,8 @@ def _room_dims_from_physics(i: int, cfg: dict) -> Tuple[int, int, int, int, floa
                           cfg.get("min_h", 192),
                           cfg.get("max_h", 512)))
 
-    # --- door half-width: enough for the player to fit through at speed
-    door_hw = _snap(_clamp(room_cross // 2, 64, 192))
+    # --- door half-width: fits within room cross-section (snap to 32, never > room_cross//2)
+    door_hw = min(_snap(_clamp(room_cross // 2, 64, 192), 32), room_cross // 2)
 
     return room_len, room_cross, room_h, door_hw, u_i
 
@@ -724,7 +719,14 @@ def build_map_string(rooms: List["Room"], bridges: List["Bridge"], cfg: dict) ->
     last  = rooms[-1]
 
     # --- spawn
-    spawn_x, spawn_y, spawn_z = first.cx(), first.cy(), first.z1 + 32
+    # Spawn near the back wall of room 0 (opposite side from exit door)
+    if first.travel_axis == 'x':
+        spawn_x = first.x1 + 64
+        spawn_y = first.cy()
+    else:
+        spawn_x = first.cx()
+        spawn_y = first.y1 + 64
+    spawn_z = first.z1 + 32
     lines.append(f"\n// entity {ei}")
     lines.append(ent_kv(classname="info_player_start",
                         origin=f"{spawn_x} {spawn_y} {spawn_z}",
