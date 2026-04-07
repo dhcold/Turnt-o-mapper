@@ -928,17 +928,17 @@ def generate_map(cfg: dict):
         sx1 = first.x1;       sx2 = first.x2
         sy1 = spawn_y + 48;   sy2 = spawn_y + 48 + SL
     lines.append(f"\n// entity {ei}")
-    lines.append(ent_brush_box("trigger_startTimer",
+    lines.append(ent_brush_box("trigger_multiple",
         sx1, sy1, first.z1,
         sx2, sy2, first.z2,
-        target="start_t"))
+        target="target_startTimer"))
     ei += 1
 
     # --- target_startTimer
     lines.append(f"\n// entity {ei}")
     lines.append(ent_kv(classname="target_startTimer",
                         origin=f"{(sx1+sx2)//2} {(sy1+sy2)//2} {first.z1 + first.h // 2}",
-                        targetname="start_t"))
+                        targetname="target_startTimer"))
     ei += 1
 
     # --- trigger_stopTimer — thin line slab at exit edge of last room
@@ -949,7 +949,7 @@ def generate_map(cfg: dict):
         ex1 = last.x1;         ex2 = last.x2
         ey1 = last.y2 - SL;   ey2 = last.y2
     lines.append(f"\n// entity {ei}")
-    lines.append(ent_brush_box("trigger_stopTimer",
+    lines.append(ent_brush_box("trigger_multiple",
         ex1, ey1, last.z1,
         ex2, ey2, last.z2,
         target="stop_t"))
@@ -973,7 +973,7 @@ def generate_map(cfg: dict):
                 tx1 = room.x1;       tx2 = room.x2
                 ty1 = room.y1;       ty2 = room.y1 + SL
             lines.append(f"\n// entity {ei}")
-            lines.append(ent_brush_box("trigger_checkpoint",
+            lines.append(ent_brush_box("trigger_multiple",
                 tx1, ty1, room.z1,
                 tx2, ty2, room.z2,
                 target=tname))
