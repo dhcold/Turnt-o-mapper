@@ -224,19 +224,21 @@ def room_walls(x1,y1,z1, x2,y2,z2, wall_t, tag, bi, doors=None, skip_sides=None)
 def _ramp_brushes(x0, y0, z0, x1, y1, z1,
                    axis, hw, door_ht,
                    floor_t, ceil_t, wall_t,
-                   tag, bi):
-    """Single 5-face pentahedron floor-wedge ramp per the reference map geometry,
-    plus ceiling and side-wall box brushes to enclose the ramp corridor.
+                   tag, bi, *,
+                   enc_lo, enc_hi):
+    """5-face pentahedron floor-wedge ramp.
 
-    Wedge brush faces:
-      left wall · right wall · slope surface · end wall (high side) · bottom.
-    All wedge faces use the floor texture.  Inward normals verified by cross-product.
+    x0/y0/z0 .. x1/y1/z1  — full ramp extent (may reach inside adjacent rooms).
+    enc_lo / enc_hi        — corridor-gap bounds; enclosure brushes (ceiling,
+                             side walls) are placed only in this section so
+                             they don't double up with room geometry.
+
+    Face winding verified: all inward normals computed by (p2-p1)×(p3-p1).
     """
     H = WALL_T
     parts = []
 
     def ramp5(f1, f2, f3, f4, f5, lbl):
-        """Emit a 5-face brush; each argument is a (p1, p2, p3) triple."""
         nonlocal bi
         faces = [face(a, b, c, floor_t) for (a, b, c) in (f1, f2, f3, f4, f5)]
         parts.append(write_brush(faces, f"brush {bi} {tag}_{lbl}"))
@@ -244,7 +246,6 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
 
     def cb(ax1, ay1, az1, ax2, ay2, az2,
            nx=None, px=None, ny=None, py=None, nz=None, pz=None, lbl=""):
-        """Emit a box brush for ramp enclosure."""
         nonlocal bi
         if ax1 >= ax2 or ay1 >= ay2 or az1 >= az2:
             return
@@ -256,23 +257,20 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
         bi += 1
 
     if axis == 'y':
-        # normalise so ay < by (travel low→high along +Y)
+        # Normalise so y0 < y1 (travel along +Y)
         if y0 > y1:
             y0, y1 = y1, y0
             z0, z1 = z1, z0
-        ylo, yhi = y0 + H, y1 - H          # trim past room shells
+        ylo, yhi = y0, y1           # caller already provides correct extent
         if ylo >= yhi:
             return parts, bi
         cx  = (x0 + x1) // 2
         xlo, xhi = cx - hw, cx + hw
-        za, zb   = z0, z1                  # z at ylo end, z at yhi end
-        bot      = min(za, zb) - H         # virtual floor for downramp
+        za, zb   = z0, z1
+        bot      = min(za, zb) - H
 
         if za <= zb:
-            # ── upramp: ylo@za(low) → yhi@zb(high) ──────────────────────────
-            # Face normals (inward, verified):
-            #   left x=xlo → +X  |  slope → (+Y,−Z)  |  bottom → +Z
-            #   back y=yhi → −Y  |  right x=xhi → −X
+            # upramp: ylo@za(low) → yhi@zb(high)
             ramp5(
                 ((xlo,yhi,za), (xlo,yhi,zb), (xlo,ylo,za)),   # left  x=xlo, +X
                 ((xlo,yhi,zb), (xhi,yhi,zb), (xhi,ylo,za)),   # slope
@@ -282,10 +280,7 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
                 "ramp",
             )
         else:
-            # ── downramp: ylo@za(high) → yhi@zb(low) ────────────────────────
-            # Face normals (inward, verified):
-            #   left x=xlo → +X  |  front y=ylo → +Y  |  virtual bot → +Z
-            #   slope → (−Y,−Z)  |  right x=xhi → −X
+            # downramp: ylo@za(high) → yhi@zb(low)
             ramp5(
                 ((xlo,yhi,zb), (xlo,ylo,za), (xlo,ylo,zb)),          # left  x=xlo, +X
                 ((xlo,ylo,zb), (xlo,ylo,za), (xhi,ylo,za)),          # front y=ylo, +Y
@@ -295,24 +290,23 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
                 "ramp",
             )
 
-        # ── enclosure brushes for axis=='y' ramp ─────────────────────────────
+        # Enclosure only in corridor gap
         z_lo, z_hi = min(za, zb), max(za, zb)
-        ceil_top = z_hi + door_ht   # match door opening height
-        # ceiling (flat box above the high end's clearance height)
-        cb(xlo, ylo, ceil_top, xhi, yhi, ceil_top + H,
-           nx=ceil_t, px=ceil_t, ny=ceil_t, py=ceil_t, nz=ceil_t, pz=ceil_t,
-           lbl="ramp_ce")
-        # side wall 1 (x < xlo)
-        cb(xlo - H, ylo, z_lo - H, xlo, yhi, ceil_top + H, lbl="ramp_w1")
-        # side wall 2 (x > xhi)
-        cb(xhi, ylo, z_lo - H, xhi + H, yhi, ceil_top + H, lbl="ramp_w2")
+        ceil_top = z_hi + door_ht
+        elo, ehi = enc_lo + H, enc_hi - H
+        if elo < ehi:
+            cb(xlo, elo, ceil_top, xhi, ehi, ceil_top + H,
+               nx=ceil_t, px=ceil_t, ny=ceil_t, py=ceil_t, nz=ceil_t, pz=ceil_t,
+               lbl="ramp_ce")
+            cb(xlo - H, elo, z_lo - H, xlo, ehi, ceil_top + H, lbl="ramp_w1")
+            cb(xhi,     elo, z_lo - H, xhi + H, ehi, ceil_top + H, lbl="ramp_w2")
 
     else:  # axis == 'x'
-        # normalise so ax < bx (travel low→high along +X)
+        # Normalise so x0 < x1 (travel along +X)
         if x0 > x1:
             x0, x1 = x1, x0
             z0, z1 = z1, z0
-        xlo, xhi = x0 + H, x1 - H
+        xlo, xhi = x0, x1           # caller already provides correct extent
         if xlo >= xhi:
             return parts, bi
         cy  = (y0 + y1) // 2
@@ -321,10 +315,7 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
         bot      = min(za, zb) - H
 
         if za <= zb:
-            # ── upramp: xlo@za(low) → xhi@zb(high) ──────────────────────────
-            # Face normals:
-            #   front y=ylo → +Y  |  back y=yhi → −Y  |  bottom → +Z
-            #   end x=xhi → −X   |  slope → (+X,−Z)
+            # upramp: xlo@za(low) → xhi@zb(high)
             ramp5(
                 ((xlo,ylo,za), (xhi,ylo,zb), (xhi,ylo,za)),   # front y=ylo, +Y
                 ((xlo,yhi,za), (xhi,yhi,za), (xhi,yhi,zb)),   # back  y=yhi, −Y
@@ -334,10 +325,7 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
                 "ramp",
             )
         else:
-            # ── downramp: xlo@za(high) → xhi@zb(low) ────────────────────────
-            # Face normals:
-            #   front y=ylo → +Y  |  end x=xlo → +X  |  virtual bot → +Z
-            #   slope → (−X,−Z)  |  back y=yhi → −Y
+            # downramp: xlo@za(high) → xhi@zb(low)
             ramp5(
                 ((xlo,ylo,zb), (xlo,ylo,za), (xhi,ylo,za)),          # front y=ylo, +Y
                 ((xlo,yhi,zb), (xlo,yhi,za), (xlo,ylo,zb)),          # end   x=xlo, +X
@@ -347,17 +335,16 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
                 "ramp",
             )
 
-        # ── enclosure brushes for axis=='x' ramp ─────────────────────────────
+        # Enclosure only in corridor gap
         z_lo, z_hi = min(za, zb), max(za, zb)
-        ceil_top = z_hi + door_ht   # match door opening height
-        # ceiling
-        cb(xlo, ylo, ceil_top, xhi, yhi, ceil_top + H,
-           nx=ceil_t, px=ceil_t, ny=ceil_t, py=ceil_t, nz=ceil_t, pz=ceil_t,
-           lbl="ramp_ce")
-        # side wall 1 (y < ylo)
-        cb(xlo, ylo - H, z_lo - H, xhi, ylo, ceil_top + H, lbl="ramp_w1")
-        # side wall 2 (y > yhi)
-        cb(xlo, yhi, z_lo - H, xhi, yhi + H, ceil_top + H, lbl="ramp_w2")
+        ceil_top = z_hi + door_ht
+        elo, ehi = enc_lo + H, enc_hi - H
+        if elo < ehi:
+            cb(elo, ylo, ceil_top, ehi, yhi, ceil_top + H,
+               nx=ceil_t, px=ceil_t, ny=ceil_t, py=ceil_t, nz=ceil_t, pz=ceil_t,
+               lbl="ramp_ce")
+            cb(elo, ylo - H, z_lo - H, ehi, ylo, ceil_top + H, lbl="ramp_w1")
+            cb(elo, yhi,     z_lo - H, ehi, yhi + H, ceil_top + H, lbl="ramp_w2")
 
     return parts, bi
 
@@ -428,23 +415,73 @@ def _wallramp_brushes(room, bi):
     return parts, bi
 
 
+SLOPE_RATIO = 4.0   # horizontal / vertical ≈ 14° — shallow enough for crouchslide
+
+
 def corridor_brushes(ax,ay,az, bx,by,bz,
                      axis, floor_t, ceil_t, wall_t,
                      door_hw=64, door_ht=DOOR_H,
+                     ra_far=None, rb_far=None,
                      tag="", bi=0):
-    """Build a corridor (flat) or ramp (when az != bz) between two rooms.
+    """Build a corridor (flat) or a full-length ramp (when az != bz).
 
-    Corridor brush extents are trimmed by WALL_T on each end so they do NOT
-    overlap the room outer shells — this eliminates Z-fighting entirely.
+    For ramps the wedge is extended to achieve ~14° slope, reaching INTO the
+    adjacent rooms as needed.  Only enclosure brushes (ceiling/side-walls) are
+    restricted to the corridor gap so they don't double-up with room geometry.
+
+    ra_far / rb_far — the inner far-wall coordinate of each room (limits how far
+                      the ramp may extend into that room).
     """
+    H  = WALL_T
     dz = abs(bz - az)
 
     if dz >= 32:
-        return _ramp_brushes(ax, ay, az,
-                             bx, by, bz,
-                             axis, door_hw, door_ht,
-                             floor_t, ceil_t, wall_t,
-                             tag=tag, bi=bi)
+        # ── Extended ramp: full slope length, not just the corridor gap ──────
+        lo_x  = min(ax, bx);  hi_x  = max(ax, bx)
+        lo_z  = az if ax <= bx else bz
+        hi_z  = bz if ax <= bx else az
+        lo_far = ra_far if ax <= bx else rb_far
+        hi_far = rb_far if ax <= bx else ra_far
+
+        if axis == 'x':
+            ramp_len = max(int(dz * SLOPE_RATIO), hi_x - lo_x)
+            if lo_z <= hi_z:          # upramp: extends into lo-side room
+                x_hi = hi_x - H
+                x_lo = x_hi - ramp_len
+                if lo_far is not None:
+                    x_lo = max(x_lo, lo_far + H)
+            else:                     # downramp: extends into hi-side room
+                x_lo = lo_x + H
+                x_hi = x_lo + ramp_len
+                if hi_far is not None:
+                    x_hi = min(x_hi, hi_far - H)
+            return _ramp_brushes(x_lo, ay, lo_z, x_hi, by, hi_z,
+                                 axis, door_hw, door_ht,
+                                 floor_t, ceil_t, wall_t,
+                                 tag=tag, bi=bi,
+                                 enc_lo=lo_x, enc_hi=hi_x)
+        else:  # axis == 'y'
+            lo_y  = min(ay, by);  hi_y  = max(ay, by)
+            lo_zy = az if ay <= by else bz
+            hi_zy = bz if ay <= by else az
+            lo_fy = ra_far if ay <= by else rb_far
+            hi_fy = rb_far if ay <= by else ra_far
+            ramp_len = max(int(dz * SLOPE_RATIO), hi_y - lo_y)
+            if lo_zy <= hi_zy:        # upramp: extends into lo-side room
+                y_hi = hi_y - H
+                y_lo = y_hi - ramp_len
+                if lo_fy is not None:
+                    y_lo = max(y_lo, lo_fy + H)
+            else:                     # downramp: extends into hi-side room
+                y_lo = lo_y + H
+                y_hi = y_lo + ramp_len
+                if hi_fy is not None:
+                    y_hi = min(y_hi, hi_fy - H)
+            return _ramp_brushes(ax, y_lo, lo_zy, bx, y_hi, hi_zy,
+                                 axis, door_hw, door_ht,
+                                 floor_t, ceil_t, wall_t,
+                                 tag=tag, bi=bi,
+                                 enc_lo=lo_y, enc_hi=hi_y)
 
     # ── flat corridor ────────────────────────────────────────────────────────
     H   = WALL_T
@@ -1092,11 +1129,20 @@ def generate_map(cfg: dict):
 
     # ── Pass 4: corridors / ramps ─────────────────────────────────────────────
     for br in bridges:
+        ra = rooms[br.room_a]; rb = rooms[br.room_b]
+        # Far-wall limits: how deep the ramp may extend into each room
+        if br.axis == 'x':
+            ra_far = ra.x1 if br.ax >= ra.x2 - 1 else ra.x2
+            rb_far = rb.x2 if br.bx <= rb.x1 + 1 else rb.x1
+        else:
+            ra_far = ra.y1 if br.ay >= ra.y2 - 1 else ra.y2
+            rb_far = rb.y2 if br.by <= rb.y1 + 1 else rb.y1
         parts, bi = corridor_brushes(
             br.ax, br.ay, br.az,
             br.bx, br.by, br.bz,
             br.axis, br.floor_t, br.ceil_t, br.wall_t,
             door_hw=br.door_hw, door_ht=br.door_ht,
+            ra_far=ra_far, rb_far=rb_far,
             tag=f"br{br.room_a}_{br.room_b}", bi=bi)
         lines.extend(parts)
 
