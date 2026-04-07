@@ -30,3 +30,5 @@ turnt_config.json
 
 # Claude Code workspace
 .claude/
+
+.gitignore
