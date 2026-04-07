@@ -48,12 +48,13 @@ ALL_TEXTURES: Dict[str, int] = {
 }
 
 FLOOR_TEX  = ["turnt/turnt_concrete","turnt/turnt_asphalt","turnt/turnt_platform",
-               "turnt/turnt_tech","turnt/turnt_teal","common/slick"]
+               "turnt/turnt_tech","turnt/turnt_teal"]
 WALL_TEX   = ["turnt/turnt_concrete","turnt/turnt_tech","turnt/turnt_white",
                "turnt/turnt_cyan","turnt/turnt_mint","turnt/turnt_violet"]
-CEIL_TEX   = ["turnt/turnt_sky","turnt/turnt_white","turnt/turnt_tech","common/nodraw"]
+CEIL_TEX   = ["turnt/turnt_sky","turnt/turnt_white","turnt/turnt_tech"]
 HIDDEN_TEX = "common/caulk"
 NODRAW_TEX = "common/nodrawnonsolid"
+TRIGGER_TEX = "common/trigger"
 
 WALL_T  = 16
 DOOR_W  = 128
@@ -826,8 +827,8 @@ def ent_kv(**kv):
 
 def ent_brush_box(cls, x1,y1,z1, x2,y2,z2, target="", extra=None):
     fs = box_faces(x1,y1,z1, x2,y2,z2,
-                   NODRAW_TEX, NODRAW_TEX, NODRAW_TEX,
-                   NODRAW_TEX, NODRAW_TEX, NODRAW_TEX)
+                   TRIGGER_TEX, TRIGGER_TEX, TRIGGER_TEX,
+                   TRIGGER_TEX, TRIGGER_TEX, TRIGGER_TEX)
     br = write_brush(fs)
     kv = {"classname": cls}
     if target: kv["target"] = target
@@ -965,7 +966,7 @@ def generate_map(cfg: dict):
     # --- checkpoints — thin line slabs at entry of each mid room
     if cfg.get("checkpoints", True):
         for cp_n, room in enumerate(rooms[1:-1], start=1):
-            tname = f"cp{cp_n}_t"
+            tname = f"target_checkpoint_{cp_n}"
             if room.travel_axis == 'x':
                 tx1 = room.x1;       tx2 = room.x1 + SL
                 ty1 = room.y1;       ty2 = room.y2
