@@ -551,6 +551,17 @@ def _snap(v, grid=64):
 def _clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
+def _rooms_clear(cx, cy, w, d, rooms) -> bool:
+    """Return True if a room at (cx,cy) with size (w,d) has no outer-shell overlap
+    with any existing room.  Shell = room ± WALL_T, so two adjacent shells must be
+    separated by at least 2*WALL_T to guarantee no brush AABB intersection."""
+    M = WALL_T * 2
+    for r in rooms:
+        if (cx + w + M > r.x1 and r.x2 + M > cx and
+                cy + d + M > r.y1 and r.y2 + M > cy):
+            return False
+    return True
+
 
 def _room_dims_from_physics(i: int, cfg: dict) -> Tuple[int, int, int, int, float]:
     """Return (room_len, room_cross, room_h, door_hw, u_i) for room index i.
@@ -654,6 +665,19 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
                 cz = max(cz, 0)     # normal layouts: don't go below origin
             else:
                 cz = max(cz, -2048) # multilevel: allow going down, but bounded
+
+        # --- prevent brush AABB overlap: push cursor until room is clear of all others ---
+        if rooms:
+            if layout in ("Random", "Spiral", "Multilevel"):
+                sx, sy = dx * 64, dy * 64
+            else:
+                sx = 64 if axis == 'x' else 0
+                sy = 64 if axis == 'y' else 0
+            for _ in range(400):
+                if _rooms_clear(cx, cy, w, d, rooms):
+                    break
+                cx += sx
+                cy += sy
 
         r = Room(x=cx, y=cy, z=cz,
                  w=w, d=d, h=room_h,
