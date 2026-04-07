@@ -1556,29 +1556,43 @@ class App(tk.Tk):
 
         # ─ Tab: Generate ───────────────────────────────────────────────────
     def _tab_generate(self, p):
+        # ── Rooms + seed (fixed top section, no scroll) ──────────────────────
         self._v_rooms = tk.IntVar(value=6)
         self._slider(p, "Number of rooms", self._v_rooms, 2, 30)
 
-        self._sec(p, "Output file")
-        row = ttk.Frame(p, style="P.TFrame")
-        row.pack(fill="x", pady=(0, 8))
-        ttk.Entry(row, textvariable=self._out_path,
-                  font=("Consolas", 8)).pack(side="left", fill="x", expand=True)
-        self._btn(row, "…", self._browse_out, w=4,
-                  color=T["accent2"]).pack(side="left", padx=(6, 0))
+        # Seed row
+        sr = ttk.Frame(p, style="P.TFrame")
+        sr.pack(fill="x", pady=(2, 4))
+        self._v_seed_lock = tk.BooleanVar(value=False)
+        ttk.Checkbutton(sr, text="Lock seed",
+                        variable=self._v_seed_lock,
+                        command=self._toggle_seed).pack(side="left")
+        self._v_seed = tk.IntVar(value=0)
+        self._seed_spin = self._spinbox(sr, self._v_seed,
+                                        0, 9_999_999, 1,
+                                        state="disabled", pack=False)
+        self._seed_spin.pack(side="left", padx=(8, 0))
 
+        # Action buttons
         self._btn(p, "Generate map", self._on_generate,
                   color=T["accent"],
-                  font=("Segoe UI", 11, "bold")).pack(fill="x", pady=(4, 6))
+                  font=("Segoe UI", 11, "bold")).pack(fill="x", pady=(6, 4))
         r2 = ttk.Frame(p, style="P.TFrame")
-        r2.pack(fill="x", pady=(0, 6))
-        self._btn(r2, "Save", self._on_save,
+        r2.pack(fill="x", pady=(0, 4))
+        self._btn(r2, "Save .map", self._on_save,
                   color=T["success"]).pack(side="left", fill="x",
                                            expand=True, padx=(0, 4))
         self._btn(r2, "New seed", self._randomize_seed,
                   color=T["accent2"]).pack(side="left", fill="x", expand=True)
+        self._launch_btn = self._btn(p, "Launch map in game",
+                                     self._on_launch_game,
+                                     color=T["warning"],
+                                     font=("Segoe UI", 9, "bold"))
+        self._launch_btn.pack(fill="x", pady=(0, 2))
 
-        # ── Scrollable map parameters (seed, layout, physics, room sizes, etc.) ──
+        ttk.Separator(p, orient="horizontal").pack(fill="x", pady=(4, 0))
+
+        # ── Scrollable parameters area ────────────────────────────────────────
         canvas = tk.Canvas(p, bg=T["bg_panel"], highlightthickness=0)
         vsb    = ttk.Scrollbar(p, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=vsb.set)
@@ -1593,74 +1607,12 @@ class App(tk.Tk):
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             canvas.bind(seq, lambda e, c=canvas: c.yview_scroll(
                 -1 if (e.delta > 0 or e.num == 4) else 1, "units"))
-        q = inner  # shorthand — all widgets go into inner frame
+        q = inner
 
-        # ── Seed ─────────────────────────────────────────────────────────────
-        self._sec(q, "Seed")
-        sr = ttk.Frame(q, style="P.TFrame")
-        sr.pack(fill="x", pady=(0, 6))
-        self._v_seed_lock = tk.BooleanVar(value=False)
-        ttk.Checkbutton(sr, text="Lock seed",
-                        variable=self._v_seed_lock,
-                        command=self._toggle_seed).pack(side="left")
-        self._v_seed = tk.IntVar(value=0)
-        self._seed_spin = self._spinbox(sr, self._v_seed,
-                                        0, 9_999_999, 1,
-                                        state="disabled", pack=False)
-        self._seed_spin.pack(side="left", padx=(8, 0))
-
-        # ── Misc toggles ──────────────────────────────────────────────────────
-        self._sec(q, "Generation")
-        self._v_height   = tk.BooleanVar(value=True)
-        self._v_checks   = tk.BooleanVar(value=True)
-        self._v_autorand = tk.BooleanVar(value=True)
-        for text, var in [
-            ("Height variation between rooms", self._v_height),
-            ("Add trigger_checkpoint entities", self._v_checks),
-        ]:
-            ttk.Checkbutton(q, text=text, variable=var).pack(anchor="w", pady=2)
-
-        # ── Physics & layout ─────────────────────────────────────────────────
-        self._sec(q, "Player physics & layout")
-        pg = ttk.Frame(q, style="P.TFrame")
-        pg.pack(fill="x", pady=(0, 4))
-        pg.columnconfigure(0, weight=1)
-        pg.columnconfigure(1, weight=1)
-
-        phy_params = [
-            ("Base speed (UPS)",     "_v_u_base",    550,  100, 2000,  10),
-            ("Speed gain / room",    "_v_u_gain",     60,    0,  300,   5),
-            ("Air time (×0.01 s)",   "_v_t_air",      68,   30,  150,   1),
-            ("Strafe factor (×0.01)","_v_strafe_f",   20,    5,   40,   1),
-            ("Rooms per segment",    "_v_rpt",          3,    1,   10,   1),
-        ]
-        for row_i, (lbl, attr, dflt, lo, hi, inc) in enumerate(phy_params):
-            r, c = divmod(row_i, 2)
-            f = ttk.Frame(pg, style="P.TFrame")
-            f.grid(row=r, column=c, padx=3, pady=2, sticky="ew")
-            ttk.Label(f, text=lbl, style="P.TLabel",
-                      font=("Segoe UI", 7)).pack(anchor="w")
-            v = tk.IntVar(value=dflt)
-            setattr(self, attr, v)
-            self._spinbox(f, v, lo, hi, inc)
-
-        # Layout style dropdown
-        ls_row = ttk.Frame(pg, style="P.TFrame")
-        ls_row.grid(row=3, column=0, columnspan=2, padx=3, pady=2, sticky="ew")
-        ttk.Label(ls_row, text="Layout style", style="P.TLabel",
-                  font=("Segoe UI", 7)).pack(anchor="w")
-        self._v_layout = tk.StringVar(value="Zigzag")
-        om = tk.OptionMenu(ls_row, self._v_layout,
-                           "Linear", "Zigzag", "Snake", "Random", "Spiral", "Multilevel")
-        om.config(bg=T["bg_input"], fg=T["text"], activebackground=T["lbx_sel"],
-                  relief="flat", font=("Segoe UI", 9), highlightthickness=0)
-        om["menu"].config(bg=T["bg_input"], fg=T["text"])
-        om.pack(fill="x")
-
-        # ── Room size clamp limits ────────────────────────────────────────────
-        self._sec(q, "Room size clamp limits (qu)")
+        # ── Room settings ─────────────────────────────────────────────────────
+        self._sec(q, "Room settings")
         g = ttk.Frame(q, style="P.TFrame")
-        g.pack(fill="x", pady=(0, 4))
+        g.pack(fill="x", pady=(0, 2))
         labels  = ["Min W", "Max W", "Min D", "Max D", "Min H", "Max H"]
         defvals = [ 384,    2048,     256,     768,     256,     640 ]
         self._sz: Dict[str, tk.IntVar] = {}
@@ -1674,66 +1626,106 @@ class App(tk.Tk):
             v = tk.IntVar(value=val)
             self._sz[lbl] = v
             self._spinbox(f, v, 64, 4096, 64)
-
-        tk.Label(q,
-                 text="Long side = travel axis  |  Short side = lateral sweep",
+        tk.Label(q, text="Long side = travel axis  |  Short side = lateral sweep",
                  bg=T["bg_panel"], fg=T["text_dim"],
-                 font=("Segoe UI", 7)).pack(anchor="w", pady=(0, 4))
+                 font=("Segoe UI", 7)).pack(anchor="w", pady=(0, 2))
 
-        # ── Door & corridor ───────────────────────────────────────────────────
-        self._sec(q, "Min door height (qu)")
-        dh_frame = ttk.Frame(q, style="P.TFrame")
-        dh_frame.pack(fill="x", pady=(0, 6))
-        dh_frame.columnconfigure(0, weight=1)
-        df = ttk.Frame(dh_frame, style="P.TFrame")
-        df.grid(row=0, column=0, padx=4, sticky="ew")
-        ttk.Label(df, text="Min door height", style="P.TLabel",
+        # Min door height + corridor width in one row
+        dc = ttk.Frame(q, style="P.TFrame")
+        dc.pack(fill="x", pady=(0, 4))
+        dc.columnconfigure(0, weight=1)
+        dc.columnconfigure(1, weight=2)
+        df = ttk.Frame(dc, style="P.TFrame")
+        df.grid(row=0, column=0, padx=(0, 6), sticky="ew")
+        ttk.Label(df, text="Min door height (qu)", style="P.TLabel",
                   font=("Segoe UI", 7)).pack(anchor="w")
         self._v_door_h = tk.IntVar(value=128)
         self._spinbox(df, self._v_door_h, 64, 512, 32)
-
-        self._sec(q, "Corridor width  (fraction of room cross-width)")
-        cw_frame = ttk.Frame(q, style="P.TFrame")
-        cw_frame.pack(fill="x", pady=(0, 8))
+        cw_f = ttk.Frame(dc, style="P.TFrame")
+        cw_f.grid(row=0, column=1, sticky="ew")
+        ttk.Label(cw_f, text="Corridor width", style="P.TLabel",
+                  font=("Segoe UI", 7)).pack(anchor="w")
         self._v_corr_frac = tk.DoubleVar(value=0.67)
         cw_lbl_var = tk.StringVar(value="67%")
         def _update_cw_lbl(*_):
             v = self._v_corr_frac.get()
-            if v >= 0.98:
-                cw_lbl_var.set("100%  (full-width, open)")
-            else:
-                cw_lbl_var.set(f"{int(v*100)}%")
+            cw_lbl_var.set("100% (open)" if v >= 0.98 else f"{int(v*100)}%")
         self._v_corr_frac.trace_add("write", _update_cw_lbl)
-        ttk.Scale(cw_frame, from_=0.25, to=1.0, variable=self._v_corr_frac,
-                  orient="horizontal").pack(fill="x", padx=4)
-        ttk.Label(cw_frame, textvariable=cw_lbl_var, style="Pd.TLabel",
-                  font=("Segoe UI", 8)).pack(anchor="e", padx=4)
+        cw_inner = ttk.Frame(cw_f, style="P.TFrame")
+        cw_inner.pack(fill="x")
+        ttk.Scale(cw_inner, from_=0.25, to=1.0, variable=self._v_corr_frac,
+                  orient="horizontal").pack(side="left", fill="x", expand=True)
+        ttk.Label(cw_inner, textvariable=cw_lbl_var, style="Pd.TLabel",
+                  font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
 
-        self._sec(q, "Preview legend")
-        for color, label in [
-            (T["start_col"], "Start room"),
-            (T["room_col"],  "Mid rooms  (brighter = faster)"),
-            (T["end_col"],   "End room"),
-            (T["corr_col"],  "Corridor / bridge"),
+        # Checkboxes
+        self._v_height = tk.BooleanVar(value=True)
+        self._v_checks = tk.BooleanVar(value=True)
+        self._v_autorand = tk.BooleanVar(value=True)
+        for text, var in [
+            ("Height variation between rooms", self._v_height),
+            ("Add trigger_checkpoint entities", self._v_checks),
         ]:
-            lrow = tk.Frame(q, bg=T["bg_panel"])
-            lrow.pack(anchor="w", pady=1)
-            tk.Label(lrow, bg=color, width=2,
-                     relief="flat").pack(side="left")
-            tk.Label(lrow, text=f"  {label}",
-                     bg=T["bg_panel"], fg=T["text"],
-                     font=("Segoe UI", 8)).pack(side="left")
+            ttk.Checkbutton(q, text=text, variable=var).pack(anchor="w", pady=1)
+
+        ttk.Separator(q, orient="horizontal").pack(fill="x", pady=(6, 2))
+
+        # ── Physics ───────────────────────────────────────────────────────────
+        self._sec(q, "Physics")
+        pg = ttk.Frame(q, style="P.TFrame")
+        pg.pack(fill="x", pady=(0, 4))
+        pg.columnconfigure(0, weight=1)
+        pg.columnconfigure(1, weight=1)
+        phy_params = [
+            ("Base speed (UPS)",      "_v_u_base",   550, 100, 2000, 10),
+            ("Speed gain / room",     "_v_u_gain",    60,   0,  300,  5),
+            ("Air time (×0.01 s)",    "_v_t_air",     68,  30,  150,  1),
+            ("Strafe factor (×0.01)", "_v_strafe_f",  20,   5,   40,  1),
+            ("Rooms per segment",     "_v_rpt",        3,   1,   10,  1),
+        ]
+        for row_i, (lbl, attr, dflt, lo, hi, inc) in enumerate(phy_params):
+            r, c = divmod(row_i, 2)
+            f = ttk.Frame(pg, style="P.TFrame")
+            f.grid(row=r, column=c, padx=3, pady=2, sticky="ew")
+            ttk.Label(f, text=lbl, style="P.TLabel",
+                      font=("Segoe UI", 7)).pack(anchor="w")
+            v = tk.IntVar(value=dflt)
+            setattr(self, attr, v)
+            self._spinbox(f, v, lo, hi, inc)
+
+        ttk.Separator(q, orient="horizontal").pack(fill="x", pady=(6, 2))
+
+        # ── Layout style (prominent) ──────────────────────────────────────────
+        self._sec(q, "Layout style")
+        self._v_layout = tk.StringVar(value="Zigzag")
+        layouts = ["Linear", "Zigzag", "Snake", "Random", "Spiral", "Multilevel"]
+        layout_grid = ttk.Frame(q, style="P.TFrame")
+        layout_grid.pack(fill="x", pady=(0, 6))
+        self._layout_btns: Dict[str, tk.Button] = {}
+
+        def _select_layout(name):
+            self._v_layout.set(name)
+            for n, btn in self._layout_btns.items():
+                btn.config(
+                    bg=T["accent"] if n == name else T["bg_card"],
+                    fg=T["btn_fg"] if n == name else T["text_dim"],
+                    relief="flat")
+
+        for col, name in enumerate(layouts):
+            btn = tk.Button(
+                layout_grid, text=name,
+                bg=T["accent"] if name == "Zigzag" else T["bg_card"],
+                fg=T["btn_fg"] if name == "Zigzag" else T["text_dim"],
+                font=("Segoe UI", 8, "bold"),
+                relief="flat", cursor="hand2", padx=4, pady=4,
+                activebackground=T["lbx_sel"],
+                command=lambda n=name: _select_layout(n))
+            btn.grid(row=col // 3, column=col % 3, padx=2, pady=2, sticky="ew")
+            layout_grid.columnconfigure(col % 3, weight=1)
+            self._layout_btns[name] = btn
 
     # ─ Tab: Textures ──────────────────────────────────────────────────
     def _tab_textures(self, p):
-        self._sec(p, "Texture folder (optional)")
-        fr = ttk.Frame(p, style="P.TFrame")
-        fr.pack(fill="x", pady=(0, 2))
-        ttk.Entry(fr, textvariable=self._tex_folder,
-                  font=("Consolas", 7)).pack(side="left", fill="x", expand=True)
-        self._btn(fr, "📂", self._browse_tex_folder, w=3,
-                  color=T["accent2"]).pack(side="left", padx=(3, 0))
-
         tk.Label(p,
                  text="F = use as Floor   W = Wall   C = Ceiling",
                  bg=T["bg_panel"], fg=T["text_dim"],
@@ -1953,44 +1945,62 @@ class App(tk.Tk):
 
         # ─ Tab: Settings ───────────────────────────────────────────────────
     def _tab_settings(self, p):
-        # ── Auto-randomize ────────────────────────────────────────────────────
+        def _path_row(parent, label, var, browse_cmd):
+            self._sec(parent, label)
+            row = ttk.Frame(parent, style="P.TFrame")
+            row.pack(fill="x", pady=(0, 8))
+            ttk.Entry(row, textvariable=var,
+                      font=("Consolas", 8)).pack(side="left", fill="x", expand=True)
+            self._btn(row, "…", browse_cmd, w=4,
+                      color=T["accent2"]).pack(side="left", padx=(6, 0))
+
+        # ── Output file ───────────────────────────────────────────────────────
+        _path_row(p, "Output .map file", self._out_path, self._browse_out)
+
+        # ── Texture folder ────────────────────────────────────────────────────
+        _path_row(p, "Texture folder (for preview)", self._tex_folder,
+                  self._browse_tex_folder)
+
+        # ── Game folder ───────────────────────────────────────────────────────
+        _path_row(p, "Game executable", self._game_exe, self._browse_game_exe)
+
+        # ── Generation ────────────────────────────────────────────────────────
         self._sec(p, "Generation")
         ttk.Checkbutton(p, text="Auto-randomize seed after each generation",
                         variable=self._v_autorand).pack(anchor="w", pady=2)
-
-        # ── Launch game ───────────────────────────────────────────────────────
-        self._sec(p, "Launch game")
-        gx_row = ttk.Frame(p, style="P.TFrame")
-        gx_row.pack(fill="x", pady=(0, 4))
-        ttk.Entry(gx_row, textvariable=self._game_exe,
-                  font=("Consolas", 8)).pack(side="left", fill="x", expand=True)
-        self._btn(gx_row, "…", self._browse_game_exe, w=4,
-                  color=T["accent2"]).pack(side="left", padx=(4, 0))
-        self._launch_btn = self._btn(p, "Launch game with map",
-                                     self._on_launch_game,
-                                     color=T["warning"],
-                                     font=("Segoe UI", 9, "bold"))
-        self._launch_btn.pack(fill="x")
 
     # ── RIGHT PANEL ───────────────────────────────────────────────────────────
     def _build_right(self, p):
         # ── top section: tabbed previews (2D + 3D)
         pc = ttk.Frame(p, style="P.TFrame")
         pc.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
-        pc.rowconfigure(1, weight=1)
+        pc.rowconfigure(2, weight=1)
         pc.columnconfigure(0, weight=1)
 
-        ph = ttk.Frame(pc, style="P.TFrame", padding=(10, 6))
+        ph = ttk.Frame(pc, style="P.TFrame", padding=(10, 4))
         ph.grid(row=0, column=0, sticky="ew")
         ttk.Label(ph, text="MAP PREVIEW", style="H2.TLabel").pack(side="left")
         self._lbl_stats = ttk.Label(ph, text="", style="Pd.TLabel",
                                     font=("Segoe UI", 8))
         self._lbl_stats.pack(side="right")
 
+        # Legend row
+        leg = tk.Frame(pc, bg=T["bg_panel"], padx=10, pady=2)
+        leg.grid(row=1, column=0, sticky="ew")
+        for color, label in [
+            (T["start_col"], "Start"),
+            (T["room_col"],  "Room"),
+            (T["end_col"],   "End"),
+            (T["corr_col"],  "Corridor"),
+        ]:
+            tk.Label(leg, bg=color, width=2, relief="flat").pack(side="left")
+            tk.Label(leg, text=f" {label}   ",
+                     bg=T["bg_panel"], fg=T["text_dim"],
+                     font=("Segoe UI", 7)).pack(side="left")
+
         # Notebook for 2D / 3D tabs
         view_nb = ttk.Notebook(pc)
-        view_nb.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
-        pc.rowconfigure(1, weight=1)
+        view_nb.grid(row=2, column=0, sticky="nsew", padx=6, pady=(0, 6))
 
         # -- 2D tab
         tab2d = ttk.Frame(view_nb, style="P.TFrame")
@@ -2314,7 +2324,6 @@ class App(tk.Tk):
 
                 self.after(0, self._redraw)
                 self.after(0, lambda: self._viewer3d.load(self._rooms, self._bridges))
-                self.after(0, self._do_save)
 
                 if self._v_autorand.get():
                     self.after(200, self._randomize_seed)
