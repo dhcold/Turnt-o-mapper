@@ -224,11 +224,12 @@ def room_walls(x1,y1,z1, x2,y2,z2, wall_t, tag, bi, doors=None, skip_sides=None)
 def _ramp_brushes(x0, y0, z0, x1, y1, z1,
                    axis, hw, floor_t, ceil_t, wall_t,
                    tag, bi):
-    """Single 5-face pentahedron floor-wedge ramp per the reference map geometry.
+    """Single 5-face pentahedron floor-wedge ramp per the reference map geometry,
+    plus ceiling and side-wall box brushes to enclose the ramp corridor.
 
-    No ceiling brush, no side-wall box brushes.  One wedge brush with faces:
+    Wedge brush faces:
       left wall · right wall · slope surface · end wall (high side) · bottom.
-    All faces use the floor texture.  Inward normals verified by cross-product.
+    All wedge faces use the floor texture.  Inward normals verified by cross-product.
     """
     H = WALL_T
     parts = []
@@ -238,6 +239,19 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
         nonlocal bi
         faces = [face(a, b, c, floor_t) for (a, b, c) in (f1, f2, f3, f4, f5)]
         parts.append(write_brush(faces, f"brush {bi} {tag}_{lbl}"))
+        bi += 1
+
+    def cb(ax1, ay1, az1, ax2, ay2, az2,
+           nx=None, px=None, ny=None, py=None, nz=None, pz=None, lbl=""):
+        """Emit a box brush for ramp enclosure."""
+        nonlocal bi
+        if ax1 >= ax2 or ay1 >= ay2 or az1 >= az2:
+            return
+        _nx = nx or wall_t; _px = px or wall_t
+        _ny = ny or wall_t; _py = py or wall_t
+        _nz = nz or ceil_t; _pz = pz or wall_t
+        fs = box_faces(ax1, ay1, az1, ax2, ay2, az2, _nx, _px, _ny, _py, _nz, _pz)
+        parts.append(write_brush(fs, f"brush {bi} {tag}_{lbl}"))
         bi += 1
 
     if axis == 'y':
@@ -280,6 +294,18 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
                 "ramp",
             )
 
+        # ── enclosure brushes for axis=='y' ramp ─────────────────────────────
+        z_lo, z_hi = min(za, zb), max(za, zb)
+        ceil_top = z_hi + DOOR_H
+        # ceiling (flat box above the high end's clearance height)
+        cb(xlo, ylo, ceil_top, xhi, yhi, ceil_top + H,
+           nx=ceil_t, px=ceil_t, ny=ceil_t, py=ceil_t, nz=ceil_t, pz=ceil_t,
+           lbl="ramp_ce")
+        # side wall 1 (x < xlo)
+        cb(xlo - H, ylo, z_lo - H, xlo, yhi, ceil_top + H, lbl="ramp_w1")
+        # side wall 2 (x > xhi)
+        cb(xhi, ylo, z_lo - H, xhi + H, yhi, ceil_top + H, lbl="ramp_w2")
+
     else:  # axis == 'x'
         # normalise so ax < bx (travel low→high along +X)
         if x0 > x1:
@@ -319,6 +345,18 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
                 ((xlo,yhi,zb), (xhi,yhi,zb), (xhi,yhi,za)),          # back  y=yhi, −Y
                 "ramp",
             )
+
+        # ── enclosure brushes for axis=='x' ramp ─────────────────────────────
+        z_lo, z_hi = min(za, zb), max(za, zb)
+        ceil_top = z_hi + DOOR_H
+        # ceiling
+        cb(xlo, ylo, ceil_top, xhi, yhi, ceil_top + H,
+           nx=ceil_t, px=ceil_t, ny=ceil_t, py=ceil_t, nz=ceil_t, pz=ceil_t,
+           lbl="ramp_ce")
+        # side wall 1 (y < ylo)
+        cb(xlo, ylo - H, z_lo - H, xhi, ylo, ceil_top + H, lbl="ramp_w1")
+        # side wall 2 (y > yhi)
+        cb(xlo, yhi, z_lo - H, xhi, yhi + H, ceil_top + H, lbl="ramp_w2")
 
     return parts, bi
 
@@ -673,7 +711,12 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
 
         # --- gap: minimum 64 to avoid Z-fighting + guarantee ramp space ---
         reach = u_i * t_air
-        gap   = max(_snap(random.uniform(0.0, reach * 0.35)), 64)
+        if i > 0 and cfg.get("height_var", True):
+            dz_abs = abs(cz - rooms[i-1].z1)
+            min_ramp_gap = max(64, _snap(dz_abs * 1.2 + 32 + 32, 64))  # dz*1.2 + two WALL_T trims
+        else:
+            min_ramp_gap = 64
+        gap   = max(_snap(random.uniform(0.0, reach * 0.35)), min_ramp_gap)
 
         # --- advance cursor ---
         if layout in ("Random", "Spiral", "Multilevel"):
@@ -736,15 +779,20 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
 
 
 def _pick_overlap_center(a1: int, a2: int, b1: int, b2: int,
-                         door_hw: int) -> Optional[int]:
+                         door_hw: int) -> Optional[Tuple[int, int]]:
     lo = max(a1, b1)
     hi = min(a2, b2)
-    if hi - lo < door_hw * 2:
+    span = hi - lo
+    if span <= 0:
+        return None
+    # Reduce door_hw to fit the overlap, minimum 32u
+    effective_hw = min(door_hw, span // 2)
+    if effective_hw < 32:
         return None
     center = (lo + hi) // 2
     center = _snap(center)
-    center = max(lo + door_hw, min(hi - door_hw, center))
-    return center
+    center = max(lo + effective_hw, min(hi - effective_hw, center))
+    return center, effective_hw
 
 
 def _try_bridge(i: int, j: int, rooms: List['Room']) -> Optional['Bridge']:
@@ -766,32 +814,36 @@ def _try_bridge(i: int, j: int, rooms: List['Room']) -> Optional['Bridge']:
     if b.x1 >= a.x2:                        # b is to the right of a
         gap = b.x1 - a.x2
         dhw = _dhw(gap, a.d, b.d)
-        yc = _pick_overlap_center(a.y1, a.y2, b.y1, b.y2, dhw)
-        if yc is not None:
+        result = _pick_overlap_center(a.y1, a.y2, b.y1, b.y2, dhw)
+        if result is not None:
+            yc, dhw = result
             return Bridge(i, j, 'x', a.x2, yc, a.z1, b.x1, yc, b.z1,
                           door_hw=dhw,
                           floor_t=a.floor_t, wall_t=a.wall_t, ceil_t=a.ceil_t)
     elif a.x1 >= b.x2:                      # b is to the left of a
         gap = a.x1 - b.x2
         dhw = _dhw(gap, a.d, b.d)
-        yc = _pick_overlap_center(a.y1, a.y2, b.y1, b.y2, dhw)
-        if yc is not None:
+        result = _pick_overlap_center(a.y1, a.y2, b.y1, b.y2, dhw)
+        if result is not None:
+            yc, dhw = result
             return Bridge(i, j, 'x', a.x1, yc, a.z1, b.x2, yc, b.z1,
                           door_hw=dhw,
                           floor_t=a.floor_t, wall_t=a.wall_t, ceil_t=a.ceil_t)
     elif b.y1 >= a.y2:                      # b is above a in Y
         gap = b.y1 - a.y2
         dhw = _dhw(gap, a.w, b.w)
-        xc = _pick_overlap_center(a.x1, a.x2, b.x1, b.x2, dhw)
-        if xc is not None:
+        result = _pick_overlap_center(a.x1, a.x2, b.x1, b.x2, dhw)
+        if result is not None:
+            xc, dhw = result
             return Bridge(i, j, 'y', xc, a.y2, a.z1, xc, b.y1, b.z1,
                           door_hw=dhw,
                           floor_t=a.floor_t, wall_t=a.wall_t, ceil_t=a.ceil_t)
     elif a.y1 >= b.y2:                      # b is below a in Y
         gap = a.y1 - b.y2
         dhw = _dhw(gap, a.w, b.w)
-        xc = _pick_overlap_center(a.x1, a.x2, b.x1, b.x2, dhw)
-        if xc is not None:
+        result = _pick_overlap_center(a.x1, a.x2, b.x1, b.x2, dhw)
+        if result is not None:
+            xc, dhw = result
             return Bridge(i, j, 'y', xc, a.y1, a.z1, xc, b.y2, b.z1,
                           door_hw=dhw,
                           floor_t=a.floor_t, wall_t=a.wall_t, ceil_t=a.ceil_t)
@@ -900,7 +952,33 @@ def generate_map(cfg: dict):
     rooms   = place_rooms(cfg["n_rooms"], cfg)
     bridges = build_bridges(rooms)
 
+    # ── Update travel_axis from actual bridge connections ─────────────────────
+    # Do a preliminary pass using bridge directions (no door data yet).
+    # Overrides the layout-direction guess; prevents deadzones / "tails".
+    for i, room in enumerate(rooms):
+        x_walls: set = set()
+        y_walls: set = set()
+        for br in bridges:
+            if br.room_a == i:
+                if br.axis == 'x': x_walls.add('wx2')
+                else:              y_walls.add('wy2')
+            elif br.room_b == i:
+                if br.axis == 'x': x_walls.add('wx1')
+                else:              y_walls.add('wy1')
+        if x_walls and not y_walls:
+            room.travel_axis = 'x'
+        elif y_walls and not x_walls:
+            room.travel_axis = 'y'
+        elif x_walls and y_walls:
+            # Corner room — align long axis with bridge direction
+            room.travel_axis = 'x' if room.w >= room.d else 'y'
+        # else: isolated room (no bridges), keep original axis
+
+    # ── Align ceiling heights so adjacent rooms feel continuous ───────────────
+    align_room_ceilings(rooms, bridges)
+
     # ── Per-room door cutout data (from bridges) ──────────────────────────────
+    # Computed AFTER align_room_ceilings so door heights match the final room.h.
     # z_bot references the BRIDGE endpoint Z so the cutout aligns with the
     # corridor floor even when rooms are at different heights.
     room_doors: Dict[int, list] = {i: [] for i in range(len(rooms))}
@@ -924,24 +1002,6 @@ def generate_map(cfg: dict):
                 {'wall':'wy2','center':br.ax,'hw':hw,'ht':door_ht,'z_bot':br.az})
             room_doors[br.room_b].append(
                 {'wall':'wy1','center':br.ax,'hw':hw,'ht':door_ht,'z_bot':br.bz})
-
-    # ── Update travel_axis from actual bridge connections ─────────────────────
-    # Overrides the layout-direction guess; prevents deadzones / "tails".
-    for i, room in enumerate(rooms):
-        walls = {d['wall'] for d in room_doors.get(i, [])}
-        x_walls = walls & {'wx1', 'wx2'}
-        y_walls = walls & {'wy1', 'wy2'}
-        if x_walls and not y_walls:
-            room.travel_axis = 'x'
-        elif y_walls and not x_walls:
-            room.travel_axis = 'y'
-        elif x_walls and y_walls:
-            # Corner room — align long axis with bridge direction
-            room.travel_axis = 'x' if room.w >= room.d else 'y'
-        # else: isolated room (no bridges), keep original axis
-
-    # ── Align ceiling heights so adjacent rooms feel continuous ───────────────
-    align_room_ceilings(rooms, bridges)
 
     # ── Compute clip regions: for each room, collect footprints of later rooms
     #    that overlap it in XY.  Later rooms "win" — older geometry is clipped.
@@ -1487,12 +1547,12 @@ class App(tk.Tk):
         t2 = ttk.Frame(nb, style="P.TFrame", padding=8)
         t3 = ttk.Frame(nb, style="P.TFrame", padding=8)
         nb.add(t1, text="  Generate  ")
-        nb.add(t2, text="  Options  ")
-        nb.add(t3, text="  Textures  ")
+        nb.add(t2, text="  Textures  ")
+        nb.add(t3, text="  Settings  ")
 
         self._tab_generate(t1)
-        self._tab_options(t2)
-        self._tab_textures(t3)
+        self._tab_textures(t2)
+        self._tab_settings(t3)
 
         # ─ Tab: Generate ───────────────────────────────────────────────────
     def _tab_generate(self, p):
@@ -1518,18 +1578,151 @@ class App(tk.Tk):
         self._btn(r2, "New seed", self._randomize_seed,
                   color=T["accent2"]).pack(side="left", fill="x", expand=True)
 
-        self._sec(p, "Launch game")
-        gx_row = ttk.Frame(p, style="P.TFrame")
-        gx_row.pack(fill="x", pady=(0, 4))
-        ttk.Entry(gx_row, textvariable=self._game_exe,
-                  font=("Consolas", 8)).pack(side="left", fill="x", expand=True)
-        self._btn(gx_row, "…", self._browse_game_exe, w=4,
-                  color=T["accent2"]).pack(side="left", padx=(4, 0))
-        self._launch_btn = self._btn(p, "Launch game with map",
-                                     self._on_launch_game,
-                                     color=T["warning"],
-                                     font=("Segoe UI", 9, "bold"))
-        self._launch_btn.pack(fill="x")
+        # ── Scrollable map parameters (seed, layout, physics, room sizes, etc.) ──
+        canvas = tk.Canvas(p, bg=T["bg_panel"], highlightthickness=0)
+        vsb    = ttk.Scrollbar(p, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = tk.Frame(canvas, bg=T["bg_panel"])
+        win   = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfig(win, width=e.width))
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            canvas.bind(seq, lambda e, c=canvas: c.yview_scroll(
+                -1 if (e.delta > 0 or e.num == 4) else 1, "units"))
+        q = inner  # shorthand — all widgets go into inner frame
+
+        # ── Seed ─────────────────────────────────────────────────────────────
+        self._sec(q, "Seed")
+        sr = ttk.Frame(q, style="P.TFrame")
+        sr.pack(fill="x", pady=(0, 6))
+        self._v_seed_lock = tk.BooleanVar(value=False)
+        ttk.Checkbutton(sr, text="Lock seed",
+                        variable=self._v_seed_lock,
+                        command=self._toggle_seed).pack(side="left")
+        self._v_seed = tk.IntVar(value=0)
+        self._seed_spin = self._spinbox(sr, self._v_seed,
+                                        0, 9_999_999, 1,
+                                        state="disabled", pack=False)
+        self._seed_spin.pack(side="left", padx=(8, 0))
+
+        # ── Misc toggles ──────────────────────────────────────────────────────
+        self._sec(q, "Generation")
+        self._v_height   = tk.BooleanVar(value=True)
+        self._v_checks   = tk.BooleanVar(value=True)
+        self._v_autorand = tk.BooleanVar(value=True)
+        for text, var in [
+            ("Height variation between rooms", self._v_height),
+            ("Add trigger_checkpoint entities", self._v_checks),
+        ]:
+            ttk.Checkbutton(q, text=text, variable=var).pack(anchor="w", pady=2)
+
+        # ── Physics & layout ─────────────────────────────────────────────────
+        self._sec(q, "Player physics & layout")
+        pg = ttk.Frame(q, style="P.TFrame")
+        pg.pack(fill="x", pady=(0, 4))
+        pg.columnconfigure(0, weight=1)
+        pg.columnconfigure(1, weight=1)
+
+        phy_params = [
+            ("Base speed (UPS)",     "_v_u_base",    550,  100, 2000,  10),
+            ("Speed gain / room",    "_v_u_gain",     60,    0,  300,   5),
+            ("Air time (×0.01 s)",   "_v_t_air",      68,   30,  150,   1),
+            ("Strafe factor (×0.01)","_v_strafe_f",   20,    5,   40,   1),
+            ("Rooms per segment",    "_v_rpt",          3,    1,   10,   1),
+        ]
+        for row_i, (lbl, attr, dflt, lo, hi, inc) in enumerate(phy_params):
+            r, c = divmod(row_i, 2)
+            f = ttk.Frame(pg, style="P.TFrame")
+            f.grid(row=r, column=c, padx=3, pady=2, sticky="ew")
+            ttk.Label(f, text=lbl, style="P.TLabel",
+                      font=("Segoe UI", 7)).pack(anchor="w")
+            v = tk.IntVar(value=dflt)
+            setattr(self, attr, v)
+            self._spinbox(f, v, lo, hi, inc)
+
+        # Layout style dropdown
+        ls_row = ttk.Frame(pg, style="P.TFrame")
+        ls_row.grid(row=3, column=0, columnspan=2, padx=3, pady=2, sticky="ew")
+        ttk.Label(ls_row, text="Layout style", style="P.TLabel",
+                  font=("Segoe UI", 7)).pack(anchor="w")
+        self._v_layout = tk.StringVar(value="Zigzag")
+        om = tk.OptionMenu(ls_row, self._v_layout,
+                           "Linear", "Zigzag", "Snake", "Random", "Spiral", "Multilevel")
+        om.config(bg=T["bg_input"], fg=T["text"], activebackground=T["lbx_sel"],
+                  relief="flat", font=("Segoe UI", 9), highlightthickness=0)
+        om["menu"].config(bg=T["bg_input"], fg=T["text"])
+        om.pack(fill="x")
+
+        # ── Room size clamp limits ────────────────────────────────────────────
+        self._sec(q, "Room size clamp limits (qu)")
+        g = ttk.Frame(q, style="P.TFrame")
+        g.pack(fill="x", pady=(0, 4))
+        labels  = ["Min W", "Max W", "Min D", "Max D", "Min H", "Max H"]
+        defvals = [ 384,    2048,     256,     768,     256,     640 ]
+        self._sz: Dict[str, tk.IntVar] = {}
+        for i, (lbl, val) in enumerate(zip(labels, defvals)):
+            r, c = divmod(i, 2)
+            f = ttk.Frame(g, style="P.TFrame")
+            f.grid(row=r, column=c, padx=3, pady=2, sticky="ew")
+            g.columnconfigure(c, weight=1)
+            ttk.Label(f, text=lbl, style="P.TLabel",
+                      font=("Segoe UI", 7)).pack(anchor="w")
+            v = tk.IntVar(value=val)
+            self._sz[lbl] = v
+            self._spinbox(f, v, 64, 4096, 64)
+
+        tk.Label(q,
+                 text="Long side = travel axis  |  Short side = lateral sweep",
+                 bg=T["bg_panel"], fg=T["text_dim"],
+                 font=("Segoe UI", 7)).pack(anchor="w", pady=(0, 4))
+
+        # ── Door & corridor ───────────────────────────────────────────────────
+        self._sec(q, "Min door height (qu)")
+        dh_frame = ttk.Frame(q, style="P.TFrame")
+        dh_frame.pack(fill="x", pady=(0, 6))
+        dh_frame.columnconfigure(0, weight=1)
+        df = ttk.Frame(dh_frame, style="P.TFrame")
+        df.grid(row=0, column=0, padx=4, sticky="ew")
+        ttk.Label(df, text="Min door height", style="P.TLabel",
+                  font=("Segoe UI", 7)).pack(anchor="w")
+        self._v_door_h = tk.IntVar(value=128)
+        self._spinbox(df, self._v_door_h, 64, 512, 32)
+
+        self._sec(q, "Corridor width  (fraction of room cross-width)")
+        cw_frame = ttk.Frame(q, style="P.TFrame")
+        cw_frame.pack(fill="x", pady=(0, 8))
+        self._v_corr_frac = tk.DoubleVar(value=0.67)
+        cw_lbl_var = tk.StringVar(value="67%")
+        def _update_cw_lbl(*_):
+            v = self._v_corr_frac.get()
+            if v >= 0.98:
+                cw_lbl_var.set("100%  (full-width, open)")
+            else:
+                cw_lbl_var.set(f"{int(v*100)}%")
+        self._v_corr_frac.trace_add("write", _update_cw_lbl)
+        ttk.Scale(cw_frame, from_=0.25, to=1.0, variable=self._v_corr_frac,
+                  orient="horizontal").pack(fill="x", padx=4)
+        ttk.Label(cw_frame, textvariable=cw_lbl_var, style="Pd.TLabel",
+                  font=("Segoe UI", 8)).pack(anchor="e", padx=4)
+
+        self._sec(q, "Preview legend")
+        for color, label in [
+            (T["start_col"], "Start room"),
+            (T["room_col"],  "Mid rooms  (brighter = faster)"),
+            (T["end_col"],   "End room"),
+            (T["corr_col"],  "Corridor / bridge"),
+        ]:
+            lrow = tk.Frame(q, bg=T["bg_panel"])
+            lrow.pack(anchor="w", pady=1)
+            tk.Label(lrow, bg=color, width=2,
+                     relief="flat").pack(side="left")
+            tk.Label(lrow, text=f"  {label}",
+                     bg=T["bg_panel"], fg=T["text"],
+                     font=("Segoe UI", 8)).pack(side="left")
 
     # ─ Tab: Textures ──────────────────────────────────────────────────
     def _tab_textures(self, p):
@@ -1758,154 +1951,26 @@ class App(tk.Tk):
         if not WALL_TEX:  WALL_TEX.append("turnt/turnt_tech")
         if not CEIL_TEX:  CEIL_TEX.append("turnt/turnt_sky")
 
-        # ─ Tab: Options ────────────────────────────────────────────────────
-    def _tab_options(self, p):
-        # Make options tab scrollable so it fits on smaller screens
-        canvas = tk.Canvas(p, bg=T["bg_panel"], highlightthickness=0)
-        vsb    = ttk.Scrollbar(p, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-        inner = tk.Frame(canvas, bg=T["bg_panel"])
-        win   = canvas.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind("<Configure>",
-                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>",
-                    lambda e: canvas.itemconfig(win, width=e.width))
-        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-            canvas.bind(seq, lambda e, c=canvas: c.yview_scroll(
-                -1 if (e.delta > 0 or e.num == 4) else 1, "units"))
-        q = inner  # shorthand — all widgets go into inner frame
+        # ─ Tab: Settings ───────────────────────────────────────────────────
+    def _tab_settings(self, p):
+        # ── Auto-randomize ────────────────────────────────────────────────────
+        self._sec(p, "Generation")
+        ttk.Checkbutton(p, text="Auto-randomize seed after each generation",
+                        variable=self._v_autorand).pack(anchor="w", pady=2)
 
-        # ── Seed ─────────────────────────────────────────────────────────────
-        self._sec(q, "Seed")
-        sr = ttk.Frame(q, style="P.TFrame")
-        sr.pack(fill="x", pady=(0, 6))
-        self._v_seed_lock = tk.BooleanVar(value=False)
-        ttk.Checkbutton(sr, text="Lock seed",
-                        variable=self._v_seed_lock,
-                        command=self._toggle_seed).pack(side="left")
-        self._v_seed = tk.IntVar(value=0)
-        self._seed_spin = self._spinbox(sr, self._v_seed,
-                                        0, 9_999_999, 1,
-                                        state="disabled", pack=False)
-        self._seed_spin.pack(side="left", padx=(8, 0))
-
-        # ── Misc toggles ──────────────────────────────────────────────────────
-        self._sec(q, "Generation")
-        self._v_height   = tk.BooleanVar(value=True)
-        self._v_checks   = tk.BooleanVar(value=True)
-        self._v_autorand = tk.BooleanVar(value=True)
-        for text, var in [
-            ("Height variation between rooms", self._v_height),
-            ("Add trigger_checkpoint entities", self._v_checks),
-            ("Auto-randomize seed after each generation", self._v_autorand),
-        ]:
-            ttk.Checkbutton(q, text=text, variable=var).pack(anchor="w", pady=2)
-
-        # ── Physics & layout ─────────────────────────────────────────────────
-        self._sec(q, "Player physics & layout")
-        pg = ttk.Frame(q, style="P.TFrame")
-        pg.pack(fill="x", pady=(0, 4))
-        pg.columnconfigure(0, weight=1)
-        pg.columnconfigure(1, weight=1)
-
-        phy_params = [
-            ("Base speed (UPS)",     "_v_u_base",    550,  100, 2000,  10),
-            ("Speed gain / room",    "_v_u_gain",     60,    0,  300,   5),
-            ("Air time (×0.01 s)",   "_v_t_air",      68,   30,  150,   1),
-            ("Strafe factor (×0.01)","_v_strafe_f",   20,    5,   40,   1),
-            ("Rooms per segment",    "_v_rpt",          3,    1,   10,   1),
-        ]
-        for row_i, (lbl, attr, dflt, lo, hi, inc) in enumerate(phy_params):
-            r, c = divmod(row_i, 2)
-            f = ttk.Frame(pg, style="P.TFrame")
-            f.grid(row=r, column=c, padx=3, pady=2, sticky="ew")
-            ttk.Label(f, text=lbl, style="P.TLabel",
-                      font=("Segoe UI", 7)).pack(anchor="w")
-            v = tk.IntVar(value=dflt)
-            setattr(self, attr, v)
-            self._spinbox(f, v, lo, hi, inc)
-
-        # Layout style dropdown
-        ls_row = ttk.Frame(pg, style="P.TFrame")
-        ls_row.grid(row=3, column=0, columnspan=2, padx=3, pady=2, sticky="ew")
-        ttk.Label(ls_row, text="Layout style", style="P.TLabel",
-                  font=("Segoe UI", 7)).pack(anchor="w")
-        self._v_layout = tk.StringVar(value="Zigzag")
-        om = tk.OptionMenu(ls_row, self._v_layout,
-                           "Linear", "Zigzag", "Snake", "Random", "Spiral", "Multilevel")
-        om.config(bg=T["bg_input"], fg=T["text"], activebackground=T["lbx_sel"],
-                  relief="flat", font=("Segoe UI", 9), highlightthickness=0)
-        om["menu"].config(bg=T["bg_input"], fg=T["text"])
-        om.pack(fill="x")
-
-        # ── Room size clamp limits ────────────────────────────────────────────
-        self._sec(q, "Room size clamp limits (qu)")
-        g = ttk.Frame(q, style="P.TFrame")
-        g.pack(fill="x", pady=(0, 4))
-        labels  = ["Min W", "Max W", "Min D", "Max D", "Min H", "Max H"]
-        defvals = [ 384,    2048,     256,     768,     256,     640 ]
-        self._sz: Dict[str, tk.IntVar] = {}
-        for i, (lbl, val) in enumerate(zip(labels, defvals)):
-            r, c = divmod(i, 2)
-            f = ttk.Frame(g, style="P.TFrame")
-            f.grid(row=r, column=c, padx=3, pady=2, sticky="ew")
-            g.columnconfigure(c, weight=1)
-            ttk.Label(f, text=lbl, style="P.TLabel",
-                      font=("Segoe UI", 7)).pack(anchor="w")
-            v = tk.IntVar(value=val)
-            self._sz[lbl] = v
-            self._spinbox(f, v, 64, 4096, 64)
-
-        tk.Label(q,
-                 text="Long side = travel axis  |  Short side = lateral sweep",
-                 bg=T["bg_panel"], fg=T["text_dim"],
-                 font=("Segoe UI", 7)).pack(anchor="w", pady=(0, 4))
-
-        # ── Door & corridor ───────────────────────────────────────────────────
-        self._sec(q, "Min door height (qu)")
-        dh_frame = ttk.Frame(q, style="P.TFrame")
-        dh_frame.pack(fill="x", pady=(0, 6))
-        dh_frame.columnconfigure(0, weight=1)
-        df = ttk.Frame(dh_frame, style="P.TFrame")
-        df.grid(row=0, column=0, padx=4, sticky="ew")
-        ttk.Label(df, text="Min door height", style="P.TLabel",
-                  font=("Segoe UI", 7)).pack(anchor="w")
-        self._v_door_h = tk.IntVar(value=128)
-        self._spinbox(df, self._v_door_h, 64, 512, 32)
-
-        self._sec(q, "Corridor width  (fraction of room cross-width)")
-        cw_frame = ttk.Frame(q, style="P.TFrame")
-        cw_frame.pack(fill="x", pady=(0, 8))
-        self._v_corr_frac = tk.DoubleVar(value=0.67)
-        cw_lbl_var = tk.StringVar(value="67%")
-        def _update_cw_lbl(*_):
-            v = self._v_corr_frac.get()
-            if v >= 0.98:
-                cw_lbl_var.set("100%  (full-width, open)")
-            else:
-                cw_lbl_var.set(f"{int(v*100)}%")
-        self._v_corr_frac.trace_add("write", _update_cw_lbl)
-        ttk.Scale(cw_frame, from_=0.25, to=1.0, variable=self._v_corr_frac,
-                  orient="horizontal").pack(fill="x", padx=4)
-        ttk.Label(cw_frame, textvariable=cw_lbl_var, style="Pd.TLabel",
-                  font=("Segoe UI", 8)).pack(anchor="e", padx=4)
-
-        self._sec(q, "Preview legend")
-        for color, label in [
-            (T["start_col"], "Start room"),
-            (T["room_col"],  "Mid rooms  (brighter = faster)"),
-            (T["end_col"],   "End room"),
-            (T["corr_col"],  "Corridor / bridge"),
-        ]:
-            lrow = tk.Frame(q, bg=T["bg_panel"])
-            lrow.pack(anchor="w", pady=1)
-            tk.Label(lrow, bg=color, width=2,
-                     relief="flat").pack(side="left")
-            tk.Label(lrow, text=f"  {label}",
-                     bg=T["bg_panel"], fg=T["text"],
-                     font=("Segoe UI", 8)).pack(side="left")
+        # ── Launch game ───────────────────────────────────────────────────────
+        self._sec(p, "Launch game")
+        gx_row = ttk.Frame(p, style="P.TFrame")
+        gx_row.pack(fill="x", pady=(0, 4))
+        ttk.Entry(gx_row, textvariable=self._game_exe,
+                  font=("Consolas", 8)).pack(side="left", fill="x", expand=True)
+        self._btn(gx_row, "…", self._browse_game_exe, w=4,
+                  color=T["accent2"]).pack(side="left", padx=(4, 0))
+        self._launch_btn = self._btn(p, "Launch game with map",
+                                     self._on_launch_game,
+                                     color=T["warning"],
+                                     font=("Segoe UI", 9, "bold"))
+        self._launch_btn.pack(fill="x")
 
     # ── RIGHT PANEL ───────────────────────────────────────────────────────────
     def _build_right(self, p):
