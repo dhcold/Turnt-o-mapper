@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 Turnt-o-mator — Quake 3 / Turnt Defrag Map Generator
-v2.0 — physics-driven layout, proper timer entities, 3D viewer
+v3.0 — new layouts, all-face textures, Z-fight fix, ramps, WASD cam, multi-route, game launcher
 """
 
-import random, os, math, threading, time
+import random, os, math, threading, time, json, subprocess
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Tuple
 import tkinter as tk
@@ -126,7 +126,6 @@ def hollow_box(x1,y1,z1, x2,y2,z2,
                floor_t, ceil_t, wall_t,
                tag="", bi=0, doors=None):
     H   = WALL_T
-    hid = HIDDEN_TEX
     ox1,oy1,oz1 = x1-H, y1-H, z1-H
     ox2,oy2,oz2 = x2+H, y2+H, z2+H
     parts = []
@@ -136,12 +135,11 @@ def hollow_box(x1,y1,z1, x2,y2,z2,
         for d in doors:
             door_map.setdefault(d['wall'], []).append(d)
 
-    # Walls that have a door opening — skip the outer caulk shell on that side
-    # to prevent texture fighting when two rooms touch each other.
     has_door = set(door_map.keys())
 
     def rb(ax1,ay1,az1, ax2,ay2,az2,
-           nx=hid,px=hid,ny=hid,py=hid,nz=hid,pz=hid, lbl=""):
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=floor_t,pz=floor_t, lbl=""):
+        """All faces get real textures — no caulk hiding faces from visibility."""
         nonlocal bi
         if ax1 >= ax2 or ay1 >= ay2 or az1 >= az2:
             return
@@ -158,6 +156,9 @@ def hollow_box(x1,y1,z1, x2,y2,z2,
         d = ds[0]
         yc = d['center'];  hw = d['hw']
         z_b = d['z_bot'];  z_t = min(z_b + d['ht'], bz2)
+        # section below door opening (floor thickness to door base)
+        if z_b > bz1:
+            rb(bx1, by1, bz1, bx2, by2, z_b, lbl=f"{wall_name}_bot", **face_kw)
         if z_t < bz2:
             rb(bx1, by1,   z_t, bx2, by2,   bz2, lbl=f"{wall_name}_top", **face_kw)
         if yc - hw > by1:
@@ -174,6 +175,9 @@ def hollow_box(x1,y1,z1, x2,y2,z2,
         d = ds[0]
         xc = d['center'];  hw = d['hw']
         z_b = d['z_bot'];  z_t = min(z_b + d['ht'], bz2)
+        # section below door opening
+        if z_b > bz1:
+            rb(bx1, by1, bz1, bx2, by2, z_b, lbl=f"{wall_name}_bot", **face_kw)
         if z_t < bz2:
             rb(bx1,   by1, z_t, bx2,   by2, bz2,  lbl=f"{wall_name}_top", **face_kw)
         if xc - hw > bx1:
@@ -181,68 +185,70 @@ def hollow_box(x1,y1,z1, x2,y2,z2,
         if xc + hw < bx2:
             rb(xc+hw, by1, z_b, bx2,   by2, z_t,  lbl=f"{wall_name}_r",   **face_kw)
 
-        # Floor and ceiling always span the full outer footprint
-    rb(ox1,oy1,oz1, ox2,oy2,z1,  pz=floor_t, lbl="floor")
-    rb(ox1,oy1,z2,  ox2,oy2,oz2, nz=ceil_t,  lbl="ceil")
+    # Floor and ceiling — inner footprint only (no XY extension) to avoid
+    # Z-fighting with neighbouring room brushes at the shared boundary plane.
+    rb(x1,y1,oz1, x2,y2,z1,
+       nx=floor_t,px=floor_t,ny=floor_t,py=floor_t,nz=floor_t,pz=floor_t,
+       lbl="floor")
+    rb(x1,y1,z2, x2,y2,oz2,
+       nx=ceil_t,px=ceil_t,ny=ceil_t,py=ceil_t,nz=ceil_t,pz=ceil_t,
+       lbl="ceil")
 
-    # Side outer shells.
-    # On sides that have a door the outer caulk shell is collapsed to zero
-    # thickness (ax1==ax2) so rb() skips it entirely — this prevents the
-    # caulk slab of this room from co-planar-overlapping the slab of the
-    # neighbour room (texture fighting / z-fighting at the seam).
-    wx1_outer_x2 = x1  if 'wx1' in has_door else ox1   # shrink to nothing when door
+    # Walls extend the full Z range (oz1→oz2) so they cover floor+ceiling
+    # thickness under their own footprint — no separate corner brushes needed.
+    # On door sides the outer caulk shell is collapsed to zero thickness to
+    # prevent co-planar face overlap with the corridor brushes.
+    wx1_outer_x2 = x1  if 'wx1' in has_door else ox1
     wx2_outer_x1 = x2  if 'wx2' in has_door else ox2
     wy1_outer_y2 = y1  if 'wy1' in has_door else oy1
     wy2_outer_y1 = y2  if 'wy2' in has_door else oy2
 
-    wall_y(ox1,          wx1_outer_x2, y1,y2, z1,z2, 'wx1', px=wall_t)
-    wall_y(wx2_outer_x1, ox2,          y1,y2, z1,z2, 'wx2', nx=wall_t)
-    wall_x(ox1,ox2, oy1,          wy1_outer_y2, z1,z2, 'wy1', py=wall_t)
-    wall_x(ox1,ox2, wy2_outer_y1, oy2,          z1,z2, 'wy2', ny=wall_t)
+    wall_y(ox1,          wx1_outer_x2, y1,y2, oz1,oz2, 'wx1',
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t)
+    wall_y(wx2_outer_x1, ox2,          y1,y2, oz1,oz2, 'wx2',
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t)
+    wall_x(ox1,ox2, oy1,          wy1_outer_y2, oz1,oz2, 'wy1',
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t)
+    wall_x(ox1,ox2, wy2_outer_y1, oy2,          oz1,oz2, 'wy2',
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t)
 
     return parts, bi
 
 def _ramp_brushes(x0, y0, z0, x1, y1, z1,
                    axis, hw, floor_t, ceil_t, wall_t,
                    tag, bi):
-    """Generate a ramp corridor between two points at different Z heights.
+    """Ramp corridor between two Z-different endpoints.
 
-    The ramp floor is a wedge brush: a box whose top-face is replaced by a
-    diagonal plane that rises from z0 (low side) to z1 (high side).
-    Side walls and ceiling are axis-aligned boxes that fully enclose the
-    passage, with the ceiling kept high enough for the player to slide
-    through at both ends.
-
-    axis='x'  → corridor runs along X, width in Y
-    axis='y'  → corridor runs along Y, width in X
+    Floor = angled wedge brush.  Ceiling = matching inverted wedge.
+    Side walls are axis-aligned boxes enclosing the passage.
+    All visible faces carry real textures (no caulk hiding).
     """
     H   = WALL_T
-    hid = HIDDEN_TEX
     parts = []
 
-    # Guarantee lo/hi orientation
     if axis == 'x':
         if x0 > x1:
-            x0,x1 = x1,x0
-            z0,z1 = z1,z0
-        xmn, xmx = x0, x1
-        cy        = (y0 + y1) // 2
+            x0,x1 = x1,x0; z0,z1 = z1,z0
+        xmn, xmx = x0 + H, x1 - H          # trim to avoid room-shell overlap
+        if xmn >= xmx:
+            return parts, bi
+        cy = (y0 + y1) // 2
         z_lo, z_hi = (z0, z1) if z0 <= z1 else (z1, z0)
-        going_up   = (z1 >= z0)          # True  → left=low, right=high
+        going_up   = (z1 >= z0)
     else:
         if y0 > y1:
-            y0,y1 = y1,y0
-            z0,z1 = z1,z0
-        ymn, ymx = y0, y1
-        cx        = (x0 + x1) // 2
+            y0,y1 = y1,y0; z0,z1 = z1,z0
+        ymn, ymx = y0 + H, y1 - H
+        if ymn >= ymx:
+            return parts, bi
+        cx = (x0 + x1) // 2
         z_lo, z_hi = (z0, z1) if z0 <= z1 else (z1, z0)
         going_up   = (z1 >= z0)
 
-    ceil_top = z_hi + DOOR_H        # ceiling height at the high end
-    ceil_bot = z_lo + DOOR_H        # ceiling height at the low end
+    ceil_top = z_hi + DOOR_H
 
     def cb(ax1,ay1,az1, ax2,ay2,az2,
-           nx=hid,px=hid,ny=hid,py=hid,nz=hid,pz=hid, lbl=""):
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=ceil_t,pz=floor_t, lbl=""):
         nonlocal bi
         if ax1>=ax2 or ay1>=ay2 or az1>=az2:
             return
@@ -250,92 +256,175 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
         parts.append(write_brush(fs, f"brush {bi} {tag}_{lbl}"))
         bi += 1
 
-    # ── wedge ramp floor ────────────────────────────────────────────────────
-    # The wedge is defined by 5 planes (Valve 220 format).
-    # Bottom face  : z = z_lo - H  (flat, full span)
-    # Low end face : the low-Z wall
-    # High end face: the high-Z wall
-    # Two side faces (in the narrow dimension)
-    # Slope face   : diagonal plane connecting (x_lo_end, z_lo) → (x_hi_end, z_hi)
-    #
-    # We write the wedge directly as raw face strings so we can control the
-    # slope plane precisely.
-
     def wedge_x(xlo, xhi, ylo, yhi, zlo, zhi, f_tex, lbl):
-        """Wedge brush for axis-X ramp: floor rises from zlo@xlo to zhi@xhi."""
+        """Floor wedge: surface rises from zlo@xlo to zhi@xhi."""
         nonlocal bi
         bot = z_lo - H
-        # 5 planes:
-        # 1) bottom  (flat, z=bot, normal +Z)
         f1 = face((xlo,ylo,bot),(xhi,ylo,bot),(xlo,yhi,bot),
-                  hid, (-1,0,0),0,(0,-1,0),0)
-        # 2) slope   (normal points roughly +Z, tilted): three points on the slope
-        #    p = (xlo,ylo,zlo), (xhi,ylo,zhi), (xlo,yhi,zlo)
+                  f_tex, (-1,0,0),0,(0,-1,0),0)
         f2 = face((xlo,ylo,zlo),(xlo,yhi,zlo),(xhi,ylo,zhi),
                   f_tex, (0,1,0),0,(0,0,-1),0)
-        # 3) low-X wall  (normal -X, i.e. faces inward from xlo side)
         f3 = face((xlo,ylo,bot),(xlo,ylo,zlo),(xlo,yhi,bot),
-                  hid, (0,1,0),0,(0,0,-1),0)
-        # 4) high-X wall (normal +X)
+                  wall_t, (0,1,0),0,(0,0,-1),0)
         f4 = face((xhi,yhi,bot),(xhi,yhi,zhi),(xhi,ylo,bot),
-                  hid, (0,-1,0),0,(0,0,-1),0)
-        # 5) side -Y (normal +Y)
+                  wall_t, (0,-1,0),0,(0,0,-1),0)
         f5 = face((xlo,ylo,bot),(xhi,ylo,bot),(xhi,ylo,zhi),
-                  hid, (-1,0,0),0,(0,0,-1),0)
-        # 6) side +Y (normal -Y)
+                  wall_t, (-1,0,0),0,(0,0,-1),0)
         f6 = face((xlo,yhi,bot),(xlo,yhi,zlo),(xhi,yhi,bot),
-                  hid, (1,0,0),0,(0,0,-1),0)
+                  wall_t, (1,0,0),0,(0,0,-1),0)
+        parts.append(write_brush([f1,f2,f3,f4,f5,f6], f"brush {bi} {tag}_{lbl}"))
+        bi += 1
+
+    def wedge_x_ceil(xlo, xhi, ylo, yhi, zlo, zhi, c_tex, lbl):
+        """Ceiling wedge: underside drops from zhi@xlo to zlo@xhi (mirror of floor)."""
+        nonlocal bi
+        top = z_hi + DOOR_H + H
+        # slope plane normal points downward into the solid
+        f1 = face((xlo,ylo,top),(xlo,yhi,top),(xhi,ylo,top),
+                  c_tex, (-1,0,0),0,(0,-1,0),0)
+        f2 = face((xlo,ylo,zhi),(xhi,ylo,zlo),(xlo,yhi,zhi),
+                  c_tex, (0,1,0),0,(0,0,-1),0)
+        f3 = face((xlo,ylo,top),(xlo,yhi,top),(xlo,ylo,zhi),
+                  wall_t, (0,1,0),0,(0,0,-1),0)
+        f4 = face((xhi,yhi,top),(xhi,ylo,top),(xhi,yhi,zlo),
+                  wall_t, (0,-1,0),0,(0,0,-1),0)
+        f5 = face((xlo,ylo,top),(xlo,ylo,zhi),(xhi,ylo,top),
+                  wall_t, (-1,0,0),0,(0,0,-1),0)
+        f6 = face((xlo,yhi,top),(xhi,yhi,top),(xlo,yhi,zhi),
+                  wall_t, (1,0,0),0,(0,0,-1),0)
         parts.append(write_brush([f1,f2,f3,f4,f5,f6], f"brush {bi} {tag}_{lbl}"))
         bi += 1
 
     def wedge_y(ylo, yhi, xlo, xhi, zlo, zhi, f_tex, lbl):
-        """Wedge brush for axis-Y ramp: floor rises from zlo@ylo to zhi@yhi."""
+        """Floor wedge: surface rises from zlo@ylo to zhi@yhi."""
         nonlocal bi
         bot = z_lo - H
         f1 = face((xlo,ylo,bot),(xhi,ylo,bot),(xlo,yhi,bot),
-                  hid, (-1,0,0),0,(0,-1,0),0)
+                  f_tex, (-1,0,0),0,(0,-1,0),0)
         f2 = face((xlo,ylo,zlo),(xhi,ylo,zlo),(xlo,yhi,zhi),
                   f_tex, (1,0,0),0,(0,0,-1),0)
         f3 = face((xlo,ylo,bot),(xlo,yhi,bot),(xlo,ylo,zlo),
-                  hid, (0,-1,0),0,(0,0,-1),0)
+                  wall_t, (0,-1,0),0,(0,0,-1),0)
         f4 = face((xhi,yhi,bot),(xhi,ylo,bot),(xhi,yhi,zhi),
-                  hid, (0,1,0),0,(0,0,-1),0)
+                  wall_t, (0,1,0),0,(0,0,-1),0)
         f5 = face((xlo,ylo,bot),(xlo,ylo,zlo),(xhi,ylo,bot),
-                  hid, (0,0,-1),0,(1,0,0),0)
+                  wall_t, (0,0,-1),0,(1,0,0),0)
         f6 = face((xlo,yhi,bot),(xhi,yhi,bot),(xlo,yhi,zhi),
-                  hid, (0,0,1),0,(1,0,0),0)
+                  wall_t, (0,0,1),0,(1,0,0),0)
         parts.append(write_brush([f1,f2,f3,f4,f5,f6], f"brush {bi} {tag}_{lbl}"))
         bi += 1
 
-    # ── build geometry ───────────────────────────────────────────────────────
+    def wedge_y_ceil(ylo, yhi, xlo, xhi, zlo, zhi, c_tex, lbl):
+        """Ceiling wedge for Y-axis ramp."""
+        nonlocal bi
+        top = z_hi + DOOR_H + H
+        f1 = face((xlo,ylo,top),(xlo,yhi,top),(xhi,ylo,top),
+                  c_tex, (-1,0,0),0,(0,-1,0),0)
+        f2 = face((xlo,ylo,zhi),(xlo,yhi,zlo),(xhi,ylo,zhi),
+                  c_tex, (1,0,0),0,(0,0,-1),0)
+        f3 = face((xlo,ylo,top),(xlo,ylo,zhi),(xlo,yhi,top),
+                  wall_t, (0,-1,0),0,(0,0,-1),0)
+        f4 = face((xhi,yhi,top),(xhi,yhi,zhi),(xhi,ylo,top),
+                  wall_t, (0,1,0),0,(0,0,-1),0)
+        f5 = face((xlo,ylo,top),(xhi,ylo,top),(xlo,ylo,zhi),
+                  wall_t, (0,0,-1),0,(1,0,0),0)
+        f6 = face((xlo,yhi,top),(xlo,yhi,zlo),(xhi,yhi,top),
+                  wall_t, (0,0,1),0,(1,0,0),0)
+        parts.append(write_brush([f1,f2,f3,f4,f5,f6], f"brush {bi} {tag}_{lbl}"))
+        bi += 1
+
     if axis == 'x':
-        # floor wedge
         if going_up:
             wedge_x(xmn, xmx, cy-hw, cy+hw, z_lo, z_hi, floor_t, "ramp_fl")
+            wedge_x_ceil(xmn, xmx, cy-hw, cy+hw, z_lo+DOOR_H, z_hi+DOOR_H, ceil_t, "ramp_ce")
         else:
             wedge_x(xmn, xmx, cy-hw, cy+hw, z_hi, z_lo, floor_t, "ramp_fl")
+            wedge_x_ceil(xmn, xmx, cy-hw, cy+hw, z_hi+DOOR_H, z_lo+DOOR_H, ceil_t, "ramp_ce")
 
-        # ceiling: sloped box matching the ramp, generous height
-        cb(xmn, cy-hw, z_lo+DOOR_H, xmx, cy+hw, z_hi+DOOR_H+H,
-           nz=ceil_t, lbl="ramp_ce") if z_lo!=z_hi else None
-        # flat ceiling covering full span
-        cb(xmn, cy-hw, ceil_top, xmx, cy+hw, ceil_top+H,
-           nz=ceil_t, lbl="ce")
-
-        # side walls — full height so ramp is enclosed
-        cb(xmn, cy-hw-H, z_lo-H, xmx, cy-hw, ceil_top+H, py=wall_t, lbl="w1")
-        cb(xmn, cy+hw,   z_lo-H, xmx, cy+hw+H, ceil_top+H, ny=wall_t, lbl="w2")
+        # side walls — full height so ramp is enclosed on both sides
+        cb(xmn, cy-hw-H, z_lo-H, xmx, cy-hw,   ceil_top+H,
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w1")
+        cb(xmn, cy+hw,   z_lo-H, xmx, cy+hw+H, ceil_top+H,
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w2")
 
     else:  # axis == 'y'
         if going_up:
             wedge_y(ymn, ymx, cx-hw, cx+hw, z_lo, z_hi, floor_t, "ramp_fl")
+            wedge_y_ceil(ymn, ymx, cx-hw, cx+hw, z_lo+DOOR_H, z_hi+DOOR_H, ceil_t, "ramp_ce")
         else:
             wedge_y(ymn, ymx, cx-hw, cx+hw, z_hi, z_lo, floor_t, "ramp_fl")
+            wedge_y_ceil(ymn, ymx, cx-hw, cx+hw, z_hi+DOOR_H, z_lo+DOOR_H, ceil_t, "ramp_ce")
 
-        cb(cx-hw, ymn, ceil_top, cx+hw, ymx, ceil_top+H,
-           nz=ceil_t, lbl="ce")
-        cb(cx-hw-H, ymn, z_lo-H, cx-hw,   ymx, ceil_top+H, px=wall_t, lbl="w1")
-        cb(cx+hw,   ymn, z_lo-H, cx+hw+H, ymx, ceil_top+H, nx=wall_t, lbl="w2")
+        cb(cx-hw-H, ymn, z_lo-H, cx-hw,   ymx, ceil_top+H,
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w1")
+        cb(cx+hw,   ymn, z_lo-H, cx+hw+H, ymx, ceil_top+H,
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w2")
+
+    return parts, bi
+
+
+def _wallramp_brushes(room, bi):
+    """Add 45° wedge ramps at the base of room walls for trick-jump surfaces.
+
+    Three variants placed randomly: floor-corner ramps (diagonal wedge in XY),
+    side-wall ramps (rising along the travel axis), and back-wall ramps.
+    """
+    parts = []
+    H   = WALL_T
+    rw  = room.wall_t
+    rf  = room.floor_t
+    sz  = 64  # ramp footprint
+
+    def wx(xlo,xhi,ylo,yhi,zlo,zhi,lbl):
+        nonlocal bi
+        bot = zlo - H
+        f1 = face((xlo,ylo,bot),(xhi,ylo,bot),(xlo,yhi,bot),
+                  rf, (-1,0,0),0,(0,-1,0),0)
+        f2 = face((xlo,ylo,zlo),(xlo,yhi,zlo),(xhi,ylo,zhi),
+                  rf, (0,1,0),0,(0,0,-1),0)
+        f3 = face((xlo,ylo,bot),(xlo,ylo,zlo),(xlo,yhi,bot),
+                  rw, (0,1,0),0,(0,0,-1),0)
+        f4 = face((xhi,yhi,bot),(xhi,yhi,zhi),(xhi,ylo,bot),
+                  rw, (0,-1,0),0,(0,0,-1),0)
+        f5 = face((xlo,ylo,bot),(xhi,ylo,bot),(xhi,ylo,zhi),
+                  rw, (-1,0,0),0,(0,0,-1),0)
+        f6 = face((xlo,yhi,bot),(xlo,yhi,zlo),(xhi,yhi,bot),
+                  rw, (1,0,0),0,(0,0,-1),0)
+        parts.append(write_brush([f1,f2,f3,f4,f5,f6], f"brush {bi} wr_{lbl}"))
+        bi += 1
+
+    def wy(ylo,yhi,xlo,xhi,zlo,zhi,lbl):
+        nonlocal bi
+        bot = zlo - H
+        f1 = face((xlo,ylo,bot),(xhi,ylo,bot),(xlo,yhi,bot),
+                  rf, (-1,0,0),0,(0,-1,0),0)
+        f2 = face((xlo,ylo,zlo),(xhi,ylo,zlo),(xlo,yhi,zhi),
+                  rf, (1,0,0),0,(0,0,-1),0)
+        f3 = face((xlo,ylo,bot),(xlo,yhi,bot),(xlo,ylo,zlo),
+                  rw, (0,-1,0),0,(0,0,-1),0)
+        f4 = face((xhi,yhi,bot),(xhi,ylo,bot),(xhi,yhi,zhi),
+                  rw, (0,1,0),0,(0,0,-1),0)
+        f5 = face((xlo,ylo,bot),(xlo,ylo,zlo),(xhi,ylo,bot),
+                  rw, (0,0,-1),0,(1,0,0),0)
+        f6 = face((xlo,yhi,bot),(xhi,yhi,bot),(xlo,yhi,zhi),
+                  rw, (0,0,1),0,(1,0,0),0)
+        parts.append(write_brush([f1,f2,f3,f4,f5,f6], f"brush {bi} wr_{lbl}"))
+        bi += 1
+
+    x1,y1,z1 = room.x1, room.y1, room.z1
+    x2,y2    = room.x2, room.y2
+    cx,cy    = room.cx(), room.cy()
+
+    # Ramps along X-walls (at y1 and y2 sides), placed at room mid-X
+    if random.random() < 0.5:
+        wx(cx-sz, cx+sz, y1, y1+sz, z1, z1+sz, "wx_lo")
+    if random.random() < 0.5:
+        wx(cx-sz, cx+sz, y2-sz, y2, z1, z1+sz, "wx_hi")
+    # Ramps along Y-walls (at x1 and x2 sides)
+    if random.random() < 0.5:
+        wy(cy-sz, cy+sz, x1, x1+sz, z1, z1+sz, "wy_lo")
+    if random.random() < 0.5:
+        wy(cy-sz, cy+sz, x2-sz, x2, z1, z1+sz, "wy_hi")
 
     return parts, bi
 
@@ -344,7 +433,11 @@ def corridor_brushes(ax,ay,az, bx,by,bz,
                      axis, floor_t, ceil_t, wall_t,
                      door_hw=64,
                      tag="", bi=0):
-    """Build a corridor (flat) or ramp (when az != bz) between two rooms."""
+    """Build a corridor (flat) or ramp (when az != bz) between two rooms.
+
+    Corridor brush extents are trimmed by WALL_T on each end so they do NOT
+    overlap the room outer shells — this eliminates Z-fighting entirely.
+    """
     dz = abs(bz - az)
 
     if dz >= 32:
@@ -357,13 +450,12 @@ def corridor_brushes(ax,ay,az, bx,by,bz,
     # ── flat corridor ────────────────────────────────────────────────────────
     H   = WALL_T
     hw  = door_hw
-    hid = HIDDEN_TEX
     parts = []
     zf = min(az, bz)
     zc = zf + DOOR_H
 
     def cb(ax1,ay1,az1, ax2,ay2,az2,
-           nx=hid,px=hid,ny=hid,py=hid,nz=hid,pz=hid, lbl=""):
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=ceil_t,pz=floor_t, lbl=""):
         nonlocal bi
         if ax1>=ax2 or ay1>=ay2 or az1>=az2:
             return
@@ -372,19 +464,33 @@ def corridor_brushes(ax,ay,az, bx,by,bz,
         bi += 1
 
     if axis == 'x':
-        xmn, xmx = min(ax,bx), max(ax,bx)
+        xmn = min(ax,bx) + H   # trim: start after room-A outer shell
+        xmx = max(ax,bx) - H   # trim: end before room-B outer shell
+        if xmn >= xmx:
+            return parts, bi
         cy = (ay + by) // 2
-        cb(xmn, cy-hw,   zf-H, xmx, cy+hw,   zf,   pz=floor_t, lbl="fl")
-        cb(xmn, cy-hw,   zc,   xmx, cy+hw,   zc+H, nz=ceil_t,  lbl="ce")
-        cb(xmn, cy-hw-H, zf,   xmx, cy-hw,   zc,   py=wall_t,  lbl="w1")
-        cb(xmn, cy+hw,   zf,   xmx, cy+hw+H, zc,   ny=wall_t,  lbl="w2")
+        cb(xmn, cy-hw,   zf-H, xmx, cy+hw,   zf,
+           nx=floor_t,px=floor_t,ny=floor_t,py=floor_t,nz=floor_t,pz=floor_t, lbl="fl")
+        cb(xmn, cy-hw,   zc,   xmx, cy+hw,   zc+H,
+           nx=ceil_t,px=ceil_t,ny=ceil_t,py=ceil_t,nz=ceil_t,pz=ceil_t, lbl="ce")
+        cb(xmn, cy-hw-H, zf,   xmx, cy-hw,   zc,
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w1")
+        cb(xmn, cy+hw,   zf,   xmx, cy+hw+H, zc,
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w2")
     else:
         cx = (ax + bx) // 2
-        ymn, ymx = min(ay,by), max(ay,by)
-        cb(cx-hw,   ymn, zf-H, cx+hw,   ymx, zf,   pz=floor_t, lbl="fl")
-        cb(cx-hw,   ymn, zc,   cx+hw,   ymx, zc+H, nz=ceil_t,  lbl="ce")
-        cb(cx-hw-H, ymn, zf,   cx-hw,   ymx, zc,   px=wall_t,  lbl="w1")
-        cb(cx+hw,   ymn, zf,   cx+hw+H, ymx, zc,   nx=wall_t,  lbl="w2")
+        ymn = min(ay,by) + H
+        ymx = max(ay,by) - H
+        if ymn >= ymx:
+            return parts, bi
+        cb(cx-hw,   ymn, zf-H, cx+hw,   ymx, zf,
+           nx=floor_t,px=floor_t,ny=floor_t,py=floor_t,nz=floor_t,pz=floor_t, lbl="fl")
+        cb(cx-hw,   ymn, zc,   cx+hw,   ymx, zc+H,
+           nx=ceil_t,px=ceil_t,ny=ceil_t,py=ceil_t,nz=ceil_t,pz=ceil_t, lbl="ce")
+        cb(cx-hw-H, ymn, zf,   cx-hw,   ymx, zc,
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w1")
+        cb(cx+hw,   ymn, zf,   cx+hw+H, ymx, zc,
+           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w2")
 
     return parts, bi
 
@@ -440,79 +546,107 @@ def _clamp(v, lo, hi):
 
 
 def _room_dims_from_physics(i: int, cfg: dict) -> Tuple[int, int, int, int, float]:
-    """
-    Return (room_len, room_cross, room_h, door_hw, u_i) for room index i.
+    """Return (room_len, room_cross, room_h, door_hw, u_i) for room index i.
 
-    room_len   — size along the travel axis  (long dimension)
-    room_cross — size across travel axis     (short dimension)
-    room_h     — height
-    door_hw    — half-width of the exit door (scales with speed)
-    u_i        — estimated player speed (UPS) on entry to this room
+    A ±40% random size variance is applied so large rooms can appear early
+    and the route feels more organic / unpredictable.
     """
     u_base   = cfg.get("u_base",    550.0)
     u_gain   = cfg.get("u_gain",     60.0)
     t_air    = cfg.get("t_air",      0.68)
     strafe_f = cfg.get("strafe_f",   0.15)
 
-    u_i = u_base + i * u_gain          # speed when entering room i
+    u_i = u_base + i * u_gain
 
-    # --- long side: how far the player travels in one jump
-    raw_len = u_i * t_air * 1.15       # +15 % run-up / landing margin
+    # random size multiplier — allows big rooms early, keeps small rooms late
+    size_var = random.uniform(0.6, 1.5)
+    h_var    = random.uniform(0.8, 1.6)
+
+    raw_len = u_i * t_air * 1.15 * size_var
     room_len = _snap(_clamp(raw_len,
                             cfg.get("min_w", 256),
                             cfg.get("max_w", 1536)))
 
-    # --- short side: lateral sweep at this speed
-    raw_cross = u_i * strafe_f
+    raw_cross = u_i * strafe_f * size_var
     room_cross = _snap(_clamp(raw_cross,
                               cfg.get("min_d", 192),
                               cfg.get("max_d", 512)))
 
-    # --- height: scales with jump height (approx v²/2g, g≈800 qu/s²)
-    jump_z = (u_i * 0.42) ** 2 / (2 * 800)   # rough peak height in qu
-    raw_h  = jump_z + 128                     # headroom above apex
+    jump_z = (u_i * 0.42) ** 2 / (2 * 800)
+    raw_h  = (jump_z + 128) * h_var
     room_h = _snap(_clamp(raw_h,
                           cfg.get("min_h", 192),
                           cfg.get("max_h", 512)))
 
-    # --- door half-width: enough for the player to fit through at speed
-    door_hw = _snap(_clamp(room_cross // 2, 64, 192))
-
+    # door_hw must be strictly < room_cross/2 so it fits through adjacent rooms.
+    # Use 1/3 of cross-width: gives a door that is 2/3 of the room width,
+    # leaving wall sections on each side and satisfying _pick_overlap_center.
+    door_hw = _snap(_clamp(room_cross // 3, 32, 128))
     return room_len, room_cross, room_h, door_hw, u_i
 
 
 def place_rooms(n: int, cfg: dict) -> List[Room]:
-    """
-    Physics-driven layout.
-    Each room is elongated along its travel axis.
-    Gap between rooms is derived from jump reach so there is no wasted space.
+    """Physics-driven layout with multiple style options.
+
+    Layouts:
+      Linear    — one straight line
+      Zigzag    — strict alternating X/Y every rpt rooms
+      Snake     — like Zigzag but segment length is random (rpt±2)
+      Random    — 4-directional: turn 90° left or right randomly each time
+      Spiral    — always turn right: +X → −Y → −X → +Y → …
+      Multilevel— Random with large Z jumps; route folds back at diff heights
+
+    Min gap = 64 units (one snap grid) to guarantee ramp corridor space and
+    eliminate Z-fighting between adjacent room outer shells.
     """
     rooms: List[Room] = []
     cx, cy, cz = 0, 0, 0
 
-    layout   = cfg.get("layout_style", "Zigzag")   # Linear / Zigzag / Spiral
-    rpt      = max(1, cfg.get("rooms_per_turn", 3)) # rooms per straight segment
-    t_air    = cfg.get("t_air", 0.68)
-    u_base   = cfg.get("u_base", 550.0)
-    u_gain   = cfg.get("u_gain",  60.0)
+    layout = cfg.get("layout_style", "Zigzag")
+    rpt    = max(1, cfg.get("rooms_per_turn", 3))
+    t_air  = cfg.get("t_air", 0.68)
 
-    axis = 'x'   # current travel axis
-    rooms_in_seg = 0
+    # --- 4-directional heading (dx, dy) for Random / Spiral / Multilevel ---
+    # Right-turn order: (+X,0) → (0,-Y) → (-X,0) → (0,+Y) → …
+    DIRS = [(1,0), (0,-1), (-1,0), (0,1)]
+    dir_idx = 0   # start heading +X
+    dx, dy  = DIRS[dir_idx]
+
+    # Zigzag / Snake still use 2-axis flip
+    axis = 'x'
+    rooms_in_seg  = 0
+    seg_turn_at   = rpt   # Snake randomises this per segment
 
     for i in range(n):
         room_len, room_cross, room_h, door_hw, u_i = _room_dims_from_physics(i, cfg)
 
-        # assign w/d according to travel axis
-        if axis == 'x':
-            w, d = room_len, room_cross
+        if layout in ("Random", "Spiral", "Multilevel"):
+            # heading determines which room dimension is "long" vs "cross"
+            if dx != 0:   # moving along X
+                w, d    = room_len, room_cross
+                t_axis  = 'x'
+            else:          # moving along Y
+                w, d    = room_cross, room_len
+                t_axis  = 'y'
         else:
-            w, d = room_cross, room_len
+            t_axis = axis
+            if axis == 'x':
+                w, d = room_len, room_cross
+            else:
+                w, d = room_cross, room_len
 
-        # height variation
+        # --- Z variation ---
         if i > 0 and cfg.get("height_var", True):
-            dz_choices = [0, 0, 0, 32, 64, -32, -64]
-            cz = _snap(cz + random.choice(dz_choices), 32)
-            cz = max(cz, 0)   # don't go below world origin
+            if layout == "Multilevel":
+                dz_choices = [0, 64, 128, 256, -64, -128, -256, 0, 0]
+            else:
+                dz_choices = [0, 0, 0, 32, 64, -32, -64]
+            cz += random.choice(dz_choices)
+            cz  = _snap(cz, 32)
+            if layout != "Multilevel":
+                cz = max(cz, 0)     # normal layouts: don't go below origin
+            else:
+                cz = max(cz, -2048) # multilevel: allow going down, but bounded
 
         r = Room(x=cx, y=cy, z=cz,
                  w=w, d=d, h=room_h,
@@ -520,44 +654,71 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
                  floor_t=random.choice(FLOOR_TEX),
                  wall_t =random.choice(WALL_TEX),
                  ceil_t =random.choice(CEIL_TEX),
-                 travel_axis=axis,
+                 travel_axis=t_axis,
                  speed_in=u_i,
                  door_hw=door_hw)
         rooms.append(r)
 
-        # --- gap = how far the player flies between rooms (0 → ~35 % of reach)
+        # --- gap: minimum 64 to avoid Z-fighting + guarantee ramp space ---
         reach = u_i * t_air
-        gap   = _snap(random.uniform(0.0, reach * 0.35))
-        gap   = max(gap, 0)   # never negative → no overlapping rooms
+        gap   = max(_snap(random.uniform(0.0, reach * 0.35)), 64)
 
-        # advance cursor along travel axis
-        if axis == 'x':
-            cx += w + gap
+        # --- advance cursor ---
+        if layout in ("Random", "Spiral", "Multilevel"):
+            cx += dx * (w + gap)
+            cy += dy * (d + gap)
         else:
-            cy += d + gap
+            if axis == 'x':
+                cx += w + gap
+            else:
+                cy += d + gap
 
-        # --- decide when to turn
+        # --- decide turn ---
         rooms_in_seg += 1
         do_turn = False
+
         if layout == "Linear":
             do_turn = False
+
         elif layout == "Zigzag":
             do_turn = (rooms_in_seg >= rpt)
+
+        elif layout == "Snake":
+            do_turn = (rooms_in_seg >= seg_turn_at)
+
+        elif layout in ("Random", "Multilevel"):
+            do_turn = (rooms_in_seg >= rpt)
+
         elif layout == "Spiral":
-            # spiral: turn every rpt rooms, always in the same rotational sense
             do_turn = (rooms_in_seg >= rpt)
 
         if do_turn:
             rooms_in_seg = 0
-            prev_axis = axis
-            axis = 'y' if axis == 'x' else 'x'
-            # after a turn we need to shift the perpendicular cursor so that
-            # the next room lines up with the centre of the last room
-            if prev_axis == 'x':
-                # was travelling X, now Y → align cy to room centre
-                cy = r.cy() - room_cross // 2
+
+            if layout in ("Random", "Multilevel"):
+                # 90° left or right, never reverse
+                turn = random.choice([-1, 1])
+                dir_idx = (dir_idx + turn) % 4
+                dx, dy  = DIRS[dir_idx]
+
+            elif layout == "Spiral":
+                # always turn right
+                dir_idx = (dir_idx + 1) % 4
+                dx, dy  = DIRS[dir_idx]
+
             else:
-                cx = r.cx() - room_cross // 2
+                # Zigzag / Snake — 2-axis flip
+                prev_axis = axis
+                axis = 'y' if axis == 'x' else 'x'
+                if layout == "Snake":
+                    seg_turn_at = random.randint(max(1, rpt - 1), rpt + 2)
+
+                # align perpendicular cursor to last room centre
+                next_len, next_cross = _room_dims_from_physics(i+1, cfg)[:2] if i+1 < n else (room_len, room_cross)
+                if prev_axis == 'x':
+                    cy = r.cy() - next_cross // 2
+                else:
+                    cx = r.cx() - next_cross // 2
 
     return rooms
 
@@ -574,58 +735,82 @@ def _pick_overlap_center(a1: int, a2: int, b1: int, b2: int,
     return center
 
 
-def build_bridges(rooms: List[Room]) -> List[Bridge]:
+def _try_bridge(i: int, j: int, rooms: List['Room']) -> Optional['Bridge']:
+    """Attempt to build a bridge between rooms[i] and rooms[j].
+
+    Returns a Bridge or None if no spatial overlap allows a corridor.
+    """
+    a, b = rooms[i], rooms[j]
+    dhw  = min(a.door_hw, b.door_hw)
+
+    if b.x1 >= a.x2:                        # b is to the right of a
+        yc = _pick_overlap_center(a.y1, a.y2, b.y1, b.y2, dhw)
+        if yc is not None:
+            return Bridge(i, j, 'x', a.x2, yc, a.z1, b.x1, yc, b.z1,
+                          door_hw=dhw,
+                          floor_t=random.choice(FLOOR_TEX),
+                          wall_t =random.choice(WALL_TEX),
+                          ceil_t =random.choice(CEIL_TEX))
+    elif a.x1 >= b.x2:                      # b is to the left of a
+        yc = _pick_overlap_center(a.y1, a.y2, b.y1, b.y2, dhw)
+        if yc is not None:
+            return Bridge(i, j, 'x', a.x1, yc, a.z1, b.x2, yc, b.z1,
+                          door_hw=dhw,
+                          floor_t=random.choice(FLOOR_TEX),
+                          wall_t =random.choice(WALL_TEX),
+                          ceil_t =random.choice(CEIL_TEX))
+    elif b.y1 >= a.y2:                      # b is above a in Y
+        xc = _pick_overlap_center(a.x1, a.x2, b.x1, b.x2, dhw)
+        if xc is not None:
+            return Bridge(i, j, 'y', xc, a.y2, a.z1, xc, b.y1, b.z1,
+                          door_hw=dhw,
+                          floor_t=random.choice(FLOOR_TEX),
+                          wall_t =random.choice(WALL_TEX),
+                          ceil_t =random.choice(CEIL_TEX))
+    elif a.y1 >= b.y2:                      # b is below a in Y
+        xc = _pick_overlap_center(a.x1, a.x2, b.x1, b.x2, dhw)
+        if xc is not None:
+            return Bridge(i, j, 'y', xc, a.y1, a.z1, xc, b.y2, b.z1,
+                          door_hw=dhw,
+                          floor_t=random.choice(FLOOR_TEX),
+                          wall_t =random.choice(WALL_TEX),
+                          ceil_t =random.choice(CEIL_TEX))
+    return None
+
+
+def build_bridges(rooms: List['Room']) -> List['Bridge']:
+    """Build sequential bridges plus optional shortcut bridges (multi-route).
+
+    Shortcuts connect rooms i → i+2 or i → i+3 when they are spatially close,
+    creating parallel paths the player can discover.
+    """
     bridges: List[Bridge] = []
+    paired: set = set()
 
+    # Sequential bridges
     for i in range(len(rooms) - 1):
-        a, b   = rooms[i], rooms[i + 1]
-        # Use the smaller door_hw of the two rooms for the corridor width
-        dhw    = min(a.door_hw, b.door_hw)
-        br: Optional[Bridge] = None
-
-        if b.x1 >= a.x2:                        # b is to the right of a
-            yc = _pick_overlap_center(a.y1, a.y2, b.y1, b.y2, dhw)
-            if yc is not None:
-                br = Bridge(i, i+1, 'x',
-                            a.x2, yc, a.z1,
-                            b.x1, yc, b.z1,
-                            door_hw=dhw,
-                            floor_t=random.choice(FLOOR_TEX),
-                            wall_t =random.choice(WALL_TEX),
-                            ceil_t =random.choice(CEIL_TEX))
-        elif a.x1 >= b.x2:                      # b is to the left of a
-            yc = _pick_overlap_center(a.y1, a.y2, b.y1, b.y2, dhw)
-            if yc is not None:
-                br = Bridge(i, i+1, 'x',
-                            a.x1, yc, a.z1,
-                            b.x2, yc, b.z1,
-                            door_hw=dhw,
-                            floor_t=random.choice(FLOOR_TEX),
-                            wall_t =random.choice(WALL_TEX),
-                            ceil_t =random.choice(CEIL_TEX))
-        elif b.y1 >= a.y2:                      # b is above a
-            xc = _pick_overlap_center(a.x1, a.x2, b.x1, b.x2, dhw)
-            if xc is not None:
-                br = Bridge(i, i+1, 'y',
-                            xc, a.y2, a.z1,
-                            xc, b.y1, b.z1,
-                            door_hw=dhw,
-                            floor_t=random.choice(FLOOR_TEX),
-                            wall_t =random.choice(WALL_TEX),
-                            ceil_t =random.choice(CEIL_TEX))
-        elif a.y1 >= b.y2:                      # b is below a
-            xc = _pick_overlap_center(a.x1, a.x2, b.x1, b.x2, dhw)
-            if xc is not None:
-                br = Bridge(i, i+1, 'y',
-                            xc, a.y1, a.z1,
-                            xc, b.y2, b.z1,
-                            door_hw=dhw,
-                            floor_t=random.choice(FLOOR_TEX),
-                            wall_t =random.choice(WALL_TEX),
-                            ceil_t =random.choice(CEIL_TEX))
-
+        br = _try_bridge(i, i + 1, rooms)
         if br is not None:
             bridges.append(br)
+            paired.add((i, i + 1))
+
+    # Shortcut bridges (multi-route): skip 1–2 rooms if geographically close
+    for i in range(len(rooms)):
+        for skip in (2, 3):
+            j = i + skip
+            if j >= len(rooms):
+                break
+            if (i, j) in paired:
+                continue
+            a, b = rooms[i], rooms[j]
+            # Only connect if centroid Manhattan distance is small enough
+            dist = abs(a.cx() - b.cx()) + abs(a.cy() - b.cy())
+            if dist < 1200:
+                br = _try_bridge(i, j, rooms)
+                if br is not None:
+                    bridges.append(br)
+                    paired.add((i, j))
+                    break   # one shortcut per room is enough
 
     return bridges
 
@@ -668,7 +853,7 @@ def generate_map(cfg: dict):
     lines = [
         "// Game: Quake 3",
         "// Format: Valve",
-        f"// Generated by Turnt-o-mator v2 | rooms={cfg['n_rooms']} seed={seed}",
+        f"// Generated by Turnt-o-mator v3 | rooms={cfg['n_rooms']} seed={seed}",
         "// entity 0",
         "{",
         '"mapversion" "220"',
@@ -678,22 +863,22 @@ def generate_map(cfg: dict):
     ]
 
     bi = 0
-    # Build per-room door cutout data from bridges (per-bridge door_hw)
+    # Build per-room door cutout data from bridges.
+    # z_bot references the BRIDGE endpoint Z so the cutout aligns with the
+    # actual corridor floor even when rooms are at different heights.
     room_doors: Dict[int, list] = {i: [] for i in range(len(rooms))}
     for br in bridges:
-        ra  = rooms[br.room_a]
-        rb2 = rooms[br.room_b]
-        hw  = br.door_hw
+        hw = br.door_hw
         if br.axis == 'x':
             room_doors[br.room_a].append(
-                {'wall':'wx2','center':br.ay,'hw':hw,'ht':DOOR_H,'z_bot':ra.z1})
+                {'wall':'wx2','center':br.ay,'hw':hw,'ht':DOOR_H,'z_bot':br.az})
             room_doors[br.room_b].append(
-                {'wall':'wx1','center':br.ay,'hw':hw,'ht':DOOR_H,'z_bot':rb2.z1})
+                {'wall':'wx1','center':br.ay,'hw':hw,'ht':DOOR_H,'z_bot':br.bz})
         else:
             room_doors[br.room_a].append(
-                {'wall':'wy2','center':br.ax,'hw':hw,'ht':DOOR_H,'z_bot':ra.z1})
+                {'wall':'wy2','center':br.ax,'hw':hw,'ht':DOOR_H,'z_bot':br.az})
             room_doors[br.room_b].append(
-                {'wall':'wy1','center':br.ax,'hw':hw,'ht':DOOR_H,'z_bot':rb2.z1})
+                {'wall':'wy1','center':br.ax,'hw':hw,'ht':DOOR_H,'z_bot':br.bz})
 
     for room in rooms:
         parts, bi = hollow_box(room.x1, room.y1, room.z1,
@@ -702,6 +887,11 @@ def generate_map(cfg: dict):
                                tag=f"r{room.idx}", bi=bi,
                                doors=room_doors.get(room.idx))
         lines.extend(parts)
+
+        # Add wall-ramp wedges (~40 % chance per room)
+        if random.random() < 0.4:
+            wr_parts, bi = _wallramp_brushes(room, bi)
+            lines.extend(wr_parts)
 
     for br in bridges:
         parts, bi = corridor_brushes(
@@ -727,67 +917,70 @@ def generate_map(cfg: dict):
                         angle="0"))
     ei += 1
 
-    # --- trigger_startTimer — box around spawn area (player hits it on circleJump)
-    sp = 128   # half-size of the spawn trigger pad
+    # --- trigger_startTimer — thin line slab perpendicular to travel axis.
+    # Player walks/jumps through it to start the timer.  8 units thick,
+    # full room width and height so it's impossible to miss.
+    SL = 8   # slab thickness
+    if first.travel_axis == 'x':
+        sx1 = spawn_x + 48;  sx2 = spawn_x + 48 + SL
+        sy1 = first.y1;       sy2 = first.y2
+    else:
+        sx1 = first.x1;       sx2 = first.x2
+        sy1 = spawn_y + 48;   sy2 = spawn_y + 48 + SL
     lines.append(f"\n// entity {ei}")
     lines.append(ent_brush_box("trigger_startTimer",
-        spawn_x - sp, spawn_y - sp, first.z1,
-        spawn_x + sp, spawn_y + sp, first.z1 + DOOR_H,
+        sx1, sy1, first.z1,
+        sx2, sy2, first.z2,
         target="start_t"))
     ei += 1
 
-    # --- target_startTimer (point entity)
+    # --- target_startTimer
     lines.append(f"\n// entity {ei}")
     lines.append(ent_kv(classname="target_startTimer",
-                        origin=f"{spawn_x} {spawn_y} {first.z1 + DOOR_H // 2}",
+                        origin=f"{(sx1+sx2)//2} {(sy1+sy2)//2} {first.z1 + first.h // 2}",
                         targetname="start_t"))
     ei += 1
 
-    # --- trigger_stopTimer — slab across the exit wall of the last room
-    # place it near the end of the last room (80 % along travel axis)
+    # --- trigger_stopTimer — thin line slab at exit edge of last room
     if last.travel_axis == 'x':
-        stop_x1 = last.x2 - 48;  stop_x2 = last.x2
-        stop_y1 = last.y1;        stop_y2 = last.y2
+        ex1 = last.x2 - SL;  ex2 = last.x2
+        ey1 = last.y1;         ey2 = last.y2
     else:
-        stop_x1 = last.x1;        stop_x2 = last.x2
-        stop_y1 = last.y2 - 48;  stop_y2 = last.y2
+        ex1 = last.x1;         ex2 = last.x2
+        ey1 = last.y2 - SL;   ey2 = last.y2
     lines.append(f"\n// entity {ei}")
     lines.append(ent_brush_box("trigger_stopTimer",
-        stop_x1, stop_y1, last.z1,
-        stop_x2, stop_y2, last.z1 + DOOR_H,
+        ex1, ey1, last.z1,
+        ex2, ey2, last.z2,
         target="stop_t"))
     ei += 1
 
-    # --- target_stopTimer (point entity)
+    # --- target_stopTimer
     lines.append(f"\n// entity {ei}")
     lines.append(ent_kv(classname="target_stopTimer",
-                        origin=f"{last.cx()} {last.cy()} {last.z1 + DOOR_H // 2}",
+                        origin=f"{last.cx()} {last.cy()} {last.z1 + last.h // 2}",
                         targetname="stop_t"))
     ei += 1
 
-    # --- checkpoints — trigger_checkpoint + target_checkpoint for rooms 1..N-1
+    # --- checkpoints — thin line slabs at entry of each mid room
     if cfg.get("checkpoints", True):
         for cp_n, room in enumerate(rooms[1:-1], start=1):
             tname = f"cp{cp_n}_t"
-
-            # trigger_checkpoint brush — spans the entry cross-section of room
             if room.travel_axis == 'x':
-                tx1 = room.x1;       tx2 = room.x1 + 48
+                tx1 = room.x1;       tx2 = room.x1 + SL
                 ty1 = room.y1;       ty2 = room.y2
             else:
                 tx1 = room.x1;       tx2 = room.x2
-                ty1 = room.y1;       ty2 = room.y1 + 48
+                ty1 = room.y1;       ty2 = room.y1 + SL
             lines.append(f"\n// entity {ei}")
             lines.append(ent_brush_box("trigger_checkpoint",
                 tx1, ty1, room.z1,
-                tx2, ty2, room.z1 + DOOR_H,
+                tx2, ty2, room.z2,
                 target=tname))
             ei += 1
-
-            # target_checkpoint (point entity)
             lines.append(f"\n// entity {ei}")
             lines.append(ent_kv(classname="target_checkpoint",
-                                origin=f"{room.cx()} {room.cy()} {room.z1 + DOOR_H // 2}",
+                                origin=f"{room.cx()} {room.cy()} {room.z1 + room.h // 2}",
                                 targetname=tname,
                                 count=str(cp_n)))
             ei += 1
@@ -815,22 +1008,56 @@ class Viewer3D(tk.Canvas):
                          highlightbackground=T["border"], **kw)
         self._rooms:   List[Room]   = []
         self._bridges: List[Bridge] = []
-        self._elev  =  30.0   # elevation  (degrees above XY plane)
-        self._azim  =  45.0   # azimuth    (degrees around Z)
+        self._elev  =  30.0
+        self._azim  =  45.0
         self._zoom  =   1.0
         self._drag_x = self._drag_y = 0
+        # WASD pan offsets (screen-space pixels)
+        self._pan_x  =  0.0
+        self._pan_y  =  0.0
+        self._keys: set = set()
+        self._wasd_job  = None
 
-        self.bind("<Configure>",    lambda e: self._draw())
+        self.bind("<Configure>",      lambda e: self._draw())
         self.bind("<ButtonPress-1>",  self._on_press)
         self.bind("<B1-Motion>",      self._on_drag)
         self.bind("<MouseWheel>",     self._on_scroll)
         self.bind("<Button-4>",       self._on_scroll)
         self.bind("<Button-5>",       self._on_scroll)
+        # grab keyboard focus on click so WASD works immediately
+        self.bind("<ButtonPress-1>",  lambda e: (self.focus_set(), self._on_press(e)))
+        self.bind("<KeyPress>",       self._on_key_press)
+        self.bind("<KeyRelease>",     self._on_key_release)
+
+        self._wasd_start()
+
+    # ── WASD camera ───────────────────────────────────────────────────────────
+    def _on_key_press(self, e):
+        self._keys.add(e.keysym.lower())
+
+    def _on_key_release(self, e):
+        self._keys.discard(e.keysym.lower())
+
+    def _wasd_start(self):
+        self._wasd_job = self.after(16, self._wasd_tick)
+
+    def _wasd_tick(self):
+        spd = max(4.0, 400.0 / max(self._zoom * 100, 1))
+        changed = False
+        if 'w' in self._keys:  self._pan_y += spd; changed = True
+        if 's' in self._keys:  self._pan_y -= spd; changed = True
+        if 'a' in self._keys:  self._pan_x -= spd; changed = True
+        if 'd' in self._keys:  self._pan_x += spd; changed = True
+        if changed:
+            self._draw()
+        self._wasd_job = self.after(16, self._wasd_tick)
 
     # ── public API ────────────────────────────────────────────────────────────
     def load(self, rooms: List[Room], bridges: List[Bridge]):
         self._rooms   = rooms
         self._bridges = bridges
+        self._pan_x   = 0.0
+        self._pan_y   = 0.0
         self._fit()
         self._draw()
 
@@ -878,8 +1105,8 @@ class Viewer3D(tk.Canvas):
 
         W = self.winfo_width()  or 400
         H = self.winfo_height() or 400
-        sx = W / 2 + xf * self._zoom
-        sy = H / 2 - zf * self._zoom   # Y up on screen
+        sx = W / 2 + xf * self._zoom + self._pan_x
+        sy = H / 2 - zf * self._zoom + self._pan_y
         return sx, sy
 
     def _box_edges(self, x1,y1,z1, x2,y2,z2):
@@ -973,7 +1200,8 @@ class Viewer3D(tk.Canvas):
 
         # compass / info
         self.create_text(8, 8,
-            text=f"elev={self._elev:.0f}°  azim={self._azim:.0f}°  zoom={self._zoom*100:.0f}%",
+            text=(f"elev={self._elev:.0f}°  azim={self._azim:.0f}°  zoom={self._zoom*100:.0f}%"
+                  f"   WASD=pan  drag=rotate  scroll=zoom"),
             fill=T["text_dim"], font=("Consolas", 7), anchor="nw")
 
     # ── mouse interaction ─────────────────────────────────────────────────────
@@ -1004,6 +1232,23 @@ class Viewer3D(tk.Canvas):
 # ══════════════════════════════════════════════════════════════════════════════
 IMG_EXTS = {".jpg",".jpeg",".png",".bmp",".tga",".gif",".tiff"}
 
+_CFG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "turnt_config.json")
+
+def _load_app_cfg() -> dict:
+    try:
+        with open(_CFG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_app_cfg(data: dict):
+    try:
+        with open(_CFG_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -1012,17 +1257,20 @@ class App(tk.Tk):
         self.minsize(1200, 750)
         self.resizable(True, True)
 
-        self._map_str   = ""
+        self._map_str        = ""
+        self._last_map_path  = ""        # path of last saved .map (for launcher)
         self._rooms:   List[Room]   = []
         self._bridges: List[Bridge] = []
+
+        app_cfg = _load_app_cfg()
 
         self._tex_folder = tk.StringVar(value="")
         self._out_path   = tk.StringVar(
             value=os.path.join(os.getcwd(), "generated.map"))
-        self._tex_paths: Dict[str, str]    = {}   # tex_name → abs file path
-        self._thumb_refs: Dict[str, object] = {}  # keep ImageTk alive
+        self._game_exe   = tk.StringVar(value=app_cfg.get("game_exe", ""))
+        self._tex_paths: Dict[str, str]    = {}
+        self._thumb_refs: Dict[str, object] = {}
 
-        # per-texture category BooleanVars  {tex_name: BooleanVar}
         self._floor_sel: Dict[str, tk.BooleanVar] = {}
         self._wall_sel:  Dict[str, tk.BooleanVar] = {}
         self._ceil_sel:  Dict[str, tk.BooleanVar] = {}
@@ -1143,6 +1391,21 @@ class App(tk.Tk):
         self._btn(r2, "New seed", self._randomize_seed,
                   color=T["accent2"]).pack(side="left", fill="x", expand=True)
 
+        # Game launcher
+        ttk.Separator(p).pack(fill="x", pady=(10, 6))
+        ttk.Label(p, text="Launch game", style="H2.TLabel").pack(anchor="w", pady=(0,4))
+        gx_row = ttk.Frame(p, style="P.TFrame")
+        gx_row.pack(fill="x", pady=(0, 4))
+        ttk.Entry(gx_row, textvariable=self._game_exe,
+                  font=("Consolas", 8)).pack(side="left", fill="x", expand=True)
+        self._btn(gx_row, "...", self._browse_game_exe, w=4,
+                  color=T["accent2"]).pack(side="left", padx=(4, 0))
+        self._launch_btn = self._btn(p, "Launch game with map",
+                                     self._on_launch_game,
+                                     color=T["warning"],
+                                     font=("Segoe UI", 9, "bold"))
+        self._launch_btn.pack(fill="x")
+
         # ─ Tab: Layout ─────────────────────────────────────────────────────
     def _tab_layout(self, p):
         self._v_rooms = tk.IntVar(value=6)
@@ -1178,7 +1441,8 @@ class App(tk.Tk):
         ttk.Label(ls_row, text="Layout style", style="P.TLabel",
                   font=("Segoe UI", 7)).pack(anchor="w")
         self._v_layout = tk.StringVar(value="Zigzag")
-        om = tk.OptionMenu(ls_row, self._v_layout, "Linear", "Zigzag", "Spiral")
+        om = tk.OptionMenu(ls_row, self._v_layout,
+                           "Linear", "Zigzag", "Snake", "Random", "Spiral", "Multilevel")
         om.config(bg=T["bg_input"], fg=T["text"], activebackground=T["lbx_sel"],
                   relief="flat", font=("Segoe UI", 9), highlightthickness=0)
         om["menu"].config(bg=T["bg_input"], fg=T["text"])
@@ -1551,7 +1815,7 @@ class App(tk.Tk):
                       font=("Segoe UI", 8, "bold"), pady=2
                       ).pack(side="left", padx=2)
         tk.Label(btn_bar,
-                 text="  drag=rotate  scroll=zoom",
+                 text="  drag=rotate  scroll=zoom  WASD=pan (click 3D first)",
                  bg=T["bg_panel"], fg=T["text_dim"],
                  font=("Segoe UI", 7)).pack(side="left", padx=6)
 
@@ -1680,6 +1944,30 @@ class App(tk.Tk):
         if p:
             self._out_path.set(p)
 
+    def _browse_game_exe(self):
+        p = filedialog.askopenfilename(
+            title="Select game executable",
+            filetypes=[("Executable", "*.exe *.sh *.app"), ("All", "*.*")])
+        if p:
+            self._game_exe.set(p)
+            _save_app_cfg({"game_exe": p})
+
+    def _on_launch_game(self):
+        exe  = self._game_exe.get().strip()
+        path = self._last_map_path or self._out_path.get()
+        if not exe:
+            self._log("Set the game executable path first.", "warn")
+            return
+        if not path or not os.path.isfile(path):
+            self._log("Save a map first (or generate + auto-save).", "warn")
+            return
+        try:
+            cmd = [exe, "--", f"--import={path}"]
+            subprocess.Popen(cmd)
+            self._log(f"Launched: {' '.join(cmd)}", "info")
+        except Exception as ex:
+            self._log(f"Launch failed: {ex}", "error")
+
     def _log(self, msg, level="plain"):
         self._logbox.config(state="normal")
         pfx = {"info":"[OK] ","warn":"[!!] ","error":"[ERR] "}.get(level,"")
@@ -1785,6 +2073,7 @@ class App(tk.Tk):
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(self._map_str)
+            self._last_map_path = path
             self._log(f"{'Saved' if manual else 'Auto-saved'}: {path}", "info")
         except Exception as e:
             self._log(f"Save error: {e}", "error")
