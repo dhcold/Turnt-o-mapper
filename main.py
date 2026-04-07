@@ -123,34 +123,36 @@ def write_brush(faces, cmt=""):
     ln.append("}")
     return "\n".join(ln)
 
-def room_floor(x1,y1,z1, x2,y2,z2, floor_t, tag, bi):
-    """Floor brush only — inner XY footprint to avoid Z-fighting with neighbours."""
+def room_floor(x1,y1,z1, x2,y2,z2, floor_t, tag, bi, clips=()):
+    """Floor brush(es) — inner XY footprint minus any later-room clip regions."""
     H   = WALL_T
     oz1 = z1 - H
     parts = []
-    if x1 < x2 and y1 < y2 and oz1 < z1:
-        fs = box_faces(x1,y1,oz1, x2,y2,z1,
-                       floor_t,floor_t,floor_t,floor_t,floor_t,floor_t)
-        parts.append(write_brush(fs, f"brush {bi} {tag}_floor"))
-        bi += 1
+    for rx1,ry1,rx2,ry2 in _clip_footprint(x1, y1, x2, y2, clips):
+        if rx1 < rx2 and ry1 < ry2 and oz1 < z1:
+            fs = box_faces(rx1,ry1,oz1, rx2,ry2,z1,
+                           floor_t,floor_t,floor_t,floor_t,floor_t,floor_t)
+            parts.append(write_brush(fs, f"brush {bi} {tag}_floor"))
+            bi += 1
     return parts, bi
 
 
-def room_ceiling(x1,y1,z1, x2,y2,z2, ceil_t, tag, bi):
-    """Ceiling brush only — inner XY footprint."""
+def room_ceiling(x1,y1,z1, x2,y2,z2, ceil_t, tag, bi, clips=()):
+    """Ceiling brush(es) — inner XY footprint minus any later-room clip regions."""
     H   = WALL_T
     oz2 = z2 + H
     parts = []
-    if x1 < x2 and y1 < y2 and z2 < oz2:
-        fs = box_faces(x1,y1,z2, x2,y2,oz2,
-                       ceil_t,ceil_t,ceil_t,ceil_t,ceil_t,ceil_t)
-        parts.append(write_brush(fs, f"brush {bi} {tag}_ceil"))
-        bi += 1
+    for rx1,ry1,rx2,ry2 in _clip_footprint(x1, y1, x2, y2, clips):
+        if rx1 < rx2 and ry1 < ry2 and z2 < oz2:
+            fs = box_faces(rx1,ry1,z2, rx2,ry2,oz2,
+                           ceil_t,ceil_t,ceil_t,ceil_t,ceil_t,ceil_t)
+            parts.append(write_brush(fs, f"brush {bi} {tag}_ceil"))
+            bi += 1
     return parts, bi
 
 
-def room_walls(x1,y1,z1, x2,y2,z2, wall_t, tag, bi, doors=None):
-    """4 side walls with door cutouts.  All 4 walls are always generated."""
+def room_walls(x1,y1,z1, x2,y2,z2, wall_t, tag, bi, doors=None, skip_sides=None):
+    """4 side walls with door cutouts.  Sides listed in skip_sides are omitted."""
     H   = WALL_T
     ox1,oy1,oz1 = x1-H, y1-H, z1-H
     ox2,oy2,oz2 = x2+H, y2+H, z2+H
@@ -206,12 +208,16 @@ def room_walls(x1,y1,z1, x2,y2,z2, wall_t, tag, bi, doors=None):
         if xc + hw < bx2:
             rb(xc+hw, by1, z_b, bx2,   by2, z_t, lbl=f"{wall_name}_r")
 
-    # All 4 walls always get full outer-shell thickness.
-    # wall_y / wall_x cut door openings where bridges attach.
-    wall_y(ox1, x1,  y1, y2, oz1, oz2, 'wx1')   # left  wall (x-min side)
-    wall_y(x2,  ox2, y1, y2, oz1, oz2, 'wx2')   # right wall (x-max side)
-    wall_x(ox1, ox2, oy1, y1, oz1, oz2, 'wy1')  # front wall (y-min side)
-    wall_x(ox1, ox2, y2,  oy2, oz1, oz2, 'wy2') # back  wall (y-max side)
+    # Generate the 4 walls; skip any that are interior to an overlapping room.
+    skip = skip_sides or set()
+    if 'wx1' not in skip:
+        wall_y(ox1, x1,  y1, y2, oz1, oz2, 'wx1')   # left  wall (x-min side)
+    if 'wx2' not in skip:
+        wall_y(x2,  ox2, y1, y2, oz1, oz2, 'wx2')   # right wall (x-max side)
+    if 'wy1' not in skip:
+        wall_x(ox1, ox2, oy1, y1, oz1, oz2, 'wy1')  # front wall (y-min side)
+    if 'wy2' not in skip:
+        wall_x(ox1, ox2, y2,  oy2, oz1, oz2, 'wy2') # back  wall (y-max side)
 
     return parts, bi
 
@@ -551,16 +557,31 @@ def _snap(v, grid=64):
 def _clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
-def _rooms_clear(cx, cy, w, d, rooms) -> bool:
-    """Return True if a room at (cx,cy) with size (w,d) has no outer-shell overlap
-    with any existing room.  Shell = room ± WALL_T, so two adjacent shells must be
-    separated by at least 2*WALL_T to guarantee no brush AABB intersection."""
-    M = WALL_T * 2
-    for r in rooms:
-        if (cx + w + M > r.x1 and r.x2 + M > cx and
-                cy + d + M > r.y1 and r.y2 + M > cy):
-            return False
-    return True
+def _xy_overlap(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2) -> bool:
+    return ax1 < bx2 and ax2 > bx1 and ay1 < by2 and ay2 > by1
+
+def _subtract_rect(rx1, ry1, rx2, ry2, ox1, oy1, ox2, oy2):
+    """Subtract obstacle from rect. Returns up to 4 surrounding pieces."""
+    cx1 = max(rx1, ox1); cy1 = max(ry1, oy1)
+    cx2 = min(rx2, ox2); cy2 = min(ry2, oy2)
+    if cx1 >= cx2 or cy1 >= cy2:
+        return [(rx1, ry1, rx2, ry2)]
+    return [(x1,y1,x2,y2) for x1,y1,x2,y2 in [
+        (rx1, ry1, cx1, ry2),   # left of obstacle
+        (cx2, ry1, rx2, ry2),   # right of obstacle
+        (cx1, ry1, cx2, cy1),   # below obstacle (centre strip)
+        (cx1, cy2, cx2, ry2),   # above obstacle (centre strip)
+    ] if x1 < x2 and y1 < y2]
+
+def _clip_footprint(x1, y1, x2, y2, clips):
+    """Return list of rects after subtracting all clip regions."""
+    rects = [(x1, y1, x2, y2)]
+    for cx1,cy1,cx2,cy2 in clips:
+        new_rects = []
+        for r in rects:
+            new_rects.extend(_subtract_rect(*r, cx1, cy1, cx2, cy2))
+        rects = new_rects
+    return rects
 
 
 def _room_dims_from_physics(i: int, cfg: dict) -> Tuple[int, int, int, int, float]:
@@ -666,19 +687,6 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
             else:
                 cz = max(cz, -2048) # multilevel: allow going down, but bounded
 
-        # --- prevent brush AABB overlap: push cursor until room is clear of all others ---
-        if rooms:
-            if layout in ("Random", "Spiral", "Multilevel"):
-                sx, sy = dx * 64, dy * 64
-            else:
-                sx = 64 if axis == 'x' else 0
-                sy = 64 if axis == 'y' else 0
-            for _ in range(400):
-                if _rooms_clear(cx, cy, w, d, rooms):
-                    break
-                cx += sx
-                cy += sy
-
         r = Room(x=cx, y=cy, z=cz,
                  w=w, d=d, h=room_h,
                  idx=i,
@@ -769,12 +777,22 @@ def _pick_overlap_center(a1: int, a2: int, b1: int, b2: int,
 def _try_bridge(i: int, j: int, rooms: List['Room']) -> Optional['Bridge']:
     """Attempt to build a bridge between rooms[i] and rooms[j].
 
-    Returns a Bridge or None if no spatial overlap allows a corridor.
+    When rooms are directly adjacent (gap = 0), the opening spans the full
+    shared edge width — no separate corridor brush is generated (corridor_brushes
+    returns empty when ax == bx / ay == by).
+    When rooms overlap in XY, no bridge is needed (they share open space).
     """
     a, b = rooms[i], rooms[j]
-    dhw  = min(a.door_hw, b.door_hw)
+
+    def _dhw(gap, cross_a, cross_b):
+        """Door half-width: full-edge when gap=0, physics-based otherwise."""
+        if gap == 0:
+            return min(cross_a, cross_b) // 2
+        return min(a.door_hw, b.door_hw)
 
     if b.x1 >= a.x2:                        # b is to the right of a
+        gap = b.x1 - a.x2
+        dhw = _dhw(gap, a.d, b.d)
         yc = _pick_overlap_center(a.y1, a.y2, b.y1, b.y2, dhw)
         if yc is not None:
             return Bridge(i, j, 'x', a.x2, yc, a.z1, b.x1, yc, b.z1,
@@ -783,6 +801,8 @@ def _try_bridge(i: int, j: int, rooms: List['Room']) -> Optional['Bridge']:
                           wall_t =random.choice(WALL_TEX),
                           ceil_t =random.choice(CEIL_TEX))
     elif a.x1 >= b.x2:                      # b is to the left of a
+        gap = a.x1 - b.x2
+        dhw = _dhw(gap, a.d, b.d)
         yc = _pick_overlap_center(a.y1, a.y2, b.y1, b.y2, dhw)
         if yc is not None:
             return Bridge(i, j, 'x', a.x1, yc, a.z1, b.x2, yc, b.z1,
@@ -791,6 +811,8 @@ def _try_bridge(i: int, j: int, rooms: List['Room']) -> Optional['Bridge']:
                           wall_t =random.choice(WALL_TEX),
                           ceil_t =random.choice(CEIL_TEX))
     elif b.y1 >= a.y2:                      # b is above a in Y
+        gap = b.y1 - a.y2
+        dhw = _dhw(gap, a.w, b.w)
         xc = _pick_overlap_center(a.x1, a.x2, b.x1, b.x2, dhw)
         if xc is not None:
             return Bridge(i, j, 'y', xc, a.y2, a.z1, xc, b.y1, b.z1,
@@ -799,6 +821,8 @@ def _try_bridge(i: int, j: int, rooms: List['Room']) -> Optional['Bridge']:
                           wall_t =random.choice(WALL_TEX),
                           ceil_t =random.choice(CEIL_TEX))
     elif a.y1 >= b.y2:                      # b is below a in Y
+        gap = a.y1 - b.y2
+        dhw = _dhw(gap, a.w, b.w)
         xc = _pick_overlap_center(a.x1, a.x2, b.x1, b.x2, dhw)
         if xc is not None:
             return Bridge(i, j, 'y', xc, a.y1, a.z1, xc, b.y2, b.z1,
@@ -806,6 +830,7 @@ def _try_bridge(i: int, j: int, rooms: List['Room']) -> Optional['Bridge']:
                           floor_t=random.choice(FLOOR_TEX),
                           wall_t =random.choice(WALL_TEX),
                           ceil_t =random.choice(CEIL_TEX))
+    # Rooms overlap in XY — open space is shared, no bridge needed
     return None
 
 
@@ -945,6 +970,17 @@ def generate_map(cfg: dict):
     # ── Align ceiling heights so adjacent rooms feel continuous ───────────────
     align_room_ceilings(rooms, bridges)
 
+    # ── Compute clip regions: for each room, collect footprints of later rooms
+    #    that overlap it in XY.  Later rooms "win" — older geometry is clipped.
+    room_clips: Dict[int, list] = {i: [] for i in range(len(rooms))}
+    for i in range(len(rooms)):
+        ri = rooms[i]
+        for j in range(i + 1, len(rooms)):
+            rj = rooms[j]
+            if _xy_overlap(ri.x1, ri.y1, ri.x2, ri.y2,
+                           rj.x1, rj.y1, rj.x2, rj.y2):
+                room_clips[i].append((rj.x1, rj.y1, rj.x2, rj.y2))
+
     lines = [
         "// Game: Quake 3",
         "// Format: Valve",
@@ -961,25 +997,46 @@ def generate_map(cfg: dict):
 
     # ── Pass 1: floors ────────────────────────────────────────────────────────
     for room in rooms:
+        clips = room_clips[room.idx]
         parts, bi = room_floor(room.x1,room.y1,room.z1, room.x2,room.y2,room.z2,
-                               room.floor_t, f"r{room.idx}", bi)
+                               room.floor_t, f"r{room.idx}", bi, clips=clips)
         lines.extend(parts)
 
     # ── Pass 2: walls ─────────────────────────────────────────────────────────
     for room in rooms:
-        parts, bi = room_walls(room.x1,room.y1,room.z1, room.x2,room.y2,room.z2,
-                               room.wall_t, f"r{room.idx}", bi,
-                               doors=room_doors.get(room.idx))
-        lines.extend(parts)
-        # Wall-ramp wedges (~40 % chance per room)
-        if random.random() < 0.4:
-            wr_parts, bi = _wallramp_brushes(room, bi)
-            lines.extend(wr_parts)
+        clips = room_clips[room.idx]
+        # Fully contained: all clip rects together cover the whole room footprint
+        contained = any(
+            cx1 <= room.x1 and room.x2 <= cx2 and cy1 <= room.y1 and room.y2 <= cy2
+            for cx1,cy1,cx2,cy2 in clips
+        ) if clips else False
+
+        if not contained:
+            # Determine which wall sides are buried inside a later room's interior
+            skip_sides: set = set()
+            for cx1,cy1,cx2,cy2 in clips:
+                y_ov = cy1 < room.y2 and cy2 > room.y1
+                x_ov = cx1 < room.x2 and cx2 > room.x1
+                if cx1 < room.x1 < cx2 and y_ov:  skip_sides.add('wx1')
+                if cx1 < room.x2 < cx2 and y_ov:  skip_sides.add('wx2')
+                if cy1 < room.y1 < cy2 and x_ov:  skip_sides.add('wy1')
+                if cy1 < room.y2 < cy2 and x_ov:  skip_sides.add('wy2')
+
+            parts, bi = room_walls(room.x1,room.y1,room.z1, room.x2,room.y2,room.z2,
+                                   room.wall_t, f"r{room.idx}", bi,
+                                   doors=room_doors.get(room.idx),
+                                   skip_sides=skip_sides)
+            lines.extend(parts)
+            # Wall-ramp wedges (~40 % chance per room)
+            if random.random() < 0.4:
+                wr_parts, bi = _wallramp_brushes(room, bi)
+                lines.extend(wr_parts)
 
     # ── Pass 3: ceilings ──────────────────────────────────────────────────────
     for room in rooms:
+        clips = room_clips[room.idx]
         parts, bi = room_ceiling(room.x1,room.y1,room.z1, room.x2,room.y2,room.z2,
-                                 room.ceil_t, f"r{room.idx}", bi)
+                                 room.ceil_t, f"r{room.idx}", bi, clips=clips)
         lines.extend(parts)
 
     # ── Pass 4: corridors / ramps ─────────────────────────────────────────────
