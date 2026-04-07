@@ -19,10 +19,6 @@ env/
 *.swp
 *.swo
 
-# Backup / copy files
-*копия*
-* — копия*
-
 # App-generated files (output maps, user config)
 generated.map
 *.map
@@ -30,5 +26,3 @@ turnt_config.json
 
 # Claude Code workspace
 .claude/
-
-.gitignore
