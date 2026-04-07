@@ -952,14 +952,14 @@ def generate_map(cfg: dict):
     lines.append(ent_brush_box("trigger_multiple",
         ex1, ey1, last.z1,
         ex2, ey2, last.z2,
-        target="stop_t"))
+        target="target_stopTimer"))
     ei += 1
 
     # --- target_stopTimer
     lines.append(f"\n// entity {ei}")
     lines.append(ent_kv(classname="target_stopTimer",
                         origin=f"{last.cx()} {last.cy()} {last.z1 + last.h // 2}",
-                        targetname="stop_t"))
+                        targetname="target_stopTimer"))
     ei += 1
 
     # --- checkpoints — thin line slabs at entry of each mid room
