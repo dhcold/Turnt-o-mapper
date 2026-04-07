@@ -1031,32 +1031,38 @@ def generate_map(cfg: dict):
     room_doors: Dict[int, list] = {i: [] for i in range(len(rooms))}
     for br in bridges:
         hw = br.door_hw
-        # Random door height per bridge: at least DOOR_H, up to the shorter room's height.
-        # Snap to 32-unit grid. 50% chance of full-height opening.
         ra, rb = rooms[br.room_a], rooms[br.room_b]
-        max_ht = min(ra.h, rb.h)
-        if random.random() < 0.5:
-            door_ht = max_ht  # full-height opening
+        dz_br  = abs(br.bz - br.az)
+
+        if dz_br >= 32:
+            # Ramp bridge: open both walls to their full room height so the ramp
+            # surface never hits a ceiling on the way through.
+            door_ht_lo = ra.h
+            door_ht_hi = rb.h
         else:
-            door_ht = _snap(random.randint(DOOR_H, max(DOOR_H, max_ht)), 32)
-        br.door_ht = door_ht   # store for corridor ceiling height
+            # Flat corridor: random door height between DOOR_H and full room height
+            max_ht = min(ra.h, rb.h)
+            if random.random() < 0.5:
+                ht = max_ht
+            else:
+                ht = _snap(random.randint(DOOR_H, max(DOOR_H, max_ht)), 32)
+            door_ht_lo = door_ht_hi = ht
+
+        br.door_ht = max(door_ht_lo, door_ht_hi)  # corridor ceiling = tallest
         if br.axis == 'x':
-            # Determine which wall based on actual bridge endpoint X coordinates
-            ra = rooms[br.room_a]; rb = rooms[br.room_b]
             ra_wall = 'wx2' if br.ax >= ra.x2 - 1 else 'wx1'
             rb_wall = 'wx1' if br.bx <= rb.x1 + 1 else 'wx2'
             room_doors[br.room_a].append(
-                {'wall':ra_wall,'center':br.ay,'hw':hw,'ht':door_ht,'z_bot':br.az})
+                {'wall':ra_wall,'center':br.ay,'hw':hw,'ht':door_ht_lo,'z_bot':br.az})
             room_doors[br.room_b].append(
-                {'wall':rb_wall,'center':br.ay,'hw':hw,'ht':door_ht,'z_bot':br.bz})
+                {'wall':rb_wall,'center':br.ay,'hw':hw,'ht':door_ht_hi,'z_bot':br.bz})
         else:
-            ra = rooms[br.room_a]; rb = rooms[br.room_b]
             ra_wall = 'wy2' if br.ay >= ra.y2 - 1 else 'wy1'
             rb_wall = 'wy1' if br.by <= rb.y1 + 1 else 'wy2'
             room_doors[br.room_a].append(
-                {'wall':ra_wall,'center':br.ax,'hw':hw,'ht':door_ht,'z_bot':br.az})
+                {'wall':ra_wall,'center':br.ax,'hw':hw,'ht':door_ht_lo,'z_bot':br.az})
             room_doors[br.room_b].append(
-                {'wall':rb_wall,'center':br.ax,'hw':hw,'ht':door_ht,'z_bot':br.bz})
+                {'wall':rb_wall,'center':br.ax,'hw':hw,'ht':door_ht_hi,'z_bot':br.bz})
 
     # ── Compute clip regions: for each room, collect footprints of later rooms
     #    that overlap it in XY.  Later rooms "win" — older geometry is clipped.
