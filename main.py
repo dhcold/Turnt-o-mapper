@@ -224,154 +224,101 @@ def room_walls(x1,y1,z1, x2,y2,z2, wall_t, tag, bi, doors=None, skip_sides=None)
 def _ramp_brushes(x0, y0, z0, x1, y1, z1,
                    axis, hw, floor_t, ceil_t, wall_t,
                    tag, bi):
-    """Ramp corridor between two Z-different endpoints.
+    """Single 5-face pentahedron floor-wedge ramp per the reference map geometry.
 
-    Floor = angled wedge brush.  Ceiling = matching inverted wedge.
-    Side walls are axis-aligned boxes enclosing the passage.
-    All visible faces carry real textures (no caulk hiding).
+    No ceiling brush, no side-wall box brushes.  One wedge brush with faces:
+      left wall · right wall · slope surface · end wall (high side) · bottom.
+    All faces use the floor texture.  Inward normals verified by cross-product.
     """
-    H   = WALL_T
+    H = WALL_T
     parts = []
 
-    if axis == 'x':
-        if x0 > x1:
-            x0,x1 = x1,x0; z0,z1 = z1,z0
-        xmn, xmx = x0 + H, x1 - H          # trim to avoid room-shell overlap
-        if xmn >= xmx:
-            return parts, bi
-        cy = (y0 + y1) // 2
-        z_lo, z_hi = (z0, z1) if z0 <= z1 else (z1, z0)
-        going_up   = (z1 >= z0)
-    else:
+    def ramp5(f1, f2, f3, f4, f5, lbl):
+        """Emit a 5-face brush; each argument is a (p1, p2, p3) triple."""
+        nonlocal bi
+        faces = [face(a, b, c, floor_t) for (a, b, c) in (f1, f2, f3, f4, f5)]
+        parts.append(write_brush(faces, f"brush {bi} {tag}_{lbl}"))
+        bi += 1
+
+    if axis == 'y':
+        # normalise so ay < by (travel low→high along +Y)
         if y0 > y1:
-            y0,y1 = y1,y0; z0,z1 = z1,z0
-        ymn, ymx = y0 + H, y1 - H
-        if ymn >= ymx:
+            y0, y1 = y1, y0
+            z0, z1 = z1, z0
+        ylo, yhi = y0 + H, y1 - H          # trim past room shells
+        if ylo >= yhi:
             return parts, bi
-        cx = (x0 + x1) // 2
-        z_lo, z_hi = (z0, z1) if z0 <= z1 else (z1, z0)
-        going_up   = (z1 >= z0)
+        cx  = (x0 + x1) // 2
+        xlo, xhi = cx - hw, cx + hw
+        za, zb   = z0, z1                  # z at ylo end, z at yhi end
+        bot      = min(za, zb) - H         # virtual floor for downramp
 
-    ceil_top = z_hi + DOOR_H
-
-    def cb(ax1,ay1,az1, ax2,ay2,az2,
-           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=ceil_t,pz=floor_t, lbl=""):
-        nonlocal bi
-        if ax1>=ax2 or ay1>=ay2 or az1>=az2:
-            return
-        fs = box_faces(ax1,ay1,az1,ax2,ay2,az2, nx,px,ny,py,nz,pz)
-        parts.append(write_brush(fs, f"brush {bi} {tag}_{lbl}"))
-        bi += 1
-
-    def wedge_x(xlo, xhi, ylo, yhi, zlo, zhi, f_tex, lbl):
-        """Floor wedge: surface rises from zlo@xlo to zhi@xhi."""
-        nonlocal bi
-        bot = z_lo - H
-        f1 = face((xlo,ylo,bot),(xhi,ylo,bot),(xlo,yhi,bot),
-                  f_tex, (-1,0,0),0,(0,-1,0),0)
-        f2 = face((xlo,ylo,zlo),(xlo,yhi,zlo),(xhi,ylo,zhi),
-                  f_tex, (0,1,0),0,(0,0,-1),0)
-        f3 = face((xlo,ylo,bot),(xlo,ylo,zlo),(xlo,yhi,bot),
-                  wall_t, (0,1,0),0,(0,0,-1),0)
-        f4 = face((xhi,yhi,bot),(xhi,yhi,zhi),(xhi,ylo,bot),
-                  wall_t, (0,-1,0),0,(0,0,-1),0)
-        f5 = face((xlo,ylo,bot),(xhi,ylo,bot),(xhi,ylo,zhi),
-                  wall_t, (-1,0,0),0,(0,0,-1),0)
-        f6 = face((xlo,yhi,bot),(xlo,yhi,zlo),(xhi,yhi,bot),
-                  wall_t, (1,0,0),0,(0,0,-1),0)
-        parts.append(write_brush([f1,f2,f3,f4,f5,f6], f"brush {bi} {tag}_{lbl}"))
-        bi += 1
-
-    def wedge_x_ceil(xlo, xhi, ylo, yhi, zlo, zhi, c_tex, lbl):
-        """Ceiling wedge: underside drops from zhi@xlo to zlo@xhi (mirror of floor)."""
-        nonlocal bi
-        top = z_hi + DOOR_H + H
-        # slope plane normal points downward into the solid
-        f1 = face((xlo,ylo,top),(xlo,yhi,top),(xhi,ylo,top),
-                  c_tex, (-1,0,0),0,(0,-1,0),0)
-        f2 = face((xlo,ylo,zhi),(xhi,ylo,zlo),(xlo,yhi,zhi),
-                  c_tex, (0,1,0),0,(0,0,-1),0)
-        f3 = face((xlo,ylo,top),(xlo,yhi,top),(xlo,ylo,zhi),
-                  wall_t, (0,1,0),0,(0,0,-1),0)
-        f4 = face((xhi,yhi,top),(xhi,ylo,top),(xhi,yhi,zlo),
-                  wall_t, (0,-1,0),0,(0,0,-1),0)
-        f5 = face((xlo,ylo,top),(xlo,ylo,zhi),(xhi,ylo,top),
-                  wall_t, (-1,0,0),0,(0,0,-1),0)
-        f6 = face((xlo,yhi,top),(xhi,yhi,top),(xlo,yhi,zhi),
-                  wall_t, (1,0,0),0,(0,0,-1),0)
-        parts.append(write_brush([f1,f2,f3,f4,f5,f6], f"brush {bi} {tag}_{lbl}"))
-        bi += 1
-
-    def wedge_y(ylo, yhi, xlo, xhi, zlo, zhi, f_tex, lbl):
-        """Floor wedge: surface rises from zlo@ylo to zhi@yhi."""
-        nonlocal bi
-        bot = z_lo - H
-        f1 = face((xlo,ylo,bot),(xhi,ylo,bot),(xlo,yhi,bot),
-                  f_tex, (-1,0,0),0,(0,-1,0),0)
-        f2 = face((xlo,ylo,zlo),(xhi,ylo,zlo),(xlo,yhi,zhi),
-                  f_tex, (1,0,0),0,(0,0,-1),0)
-        f3 = face((xlo,ylo,bot),(xlo,yhi,bot),(xlo,ylo,zlo),
-                  wall_t, (0,-1,0),0,(0,0,-1),0)
-        f4 = face((xhi,yhi,bot),(xhi,ylo,bot),(xhi,yhi,zhi),
-                  wall_t, (0,1,0),0,(0,0,-1),0)
-        f5 = face((xlo,ylo,bot),(xlo,ylo,zlo),(xhi,ylo,bot),
-                  wall_t, (0,0,-1),0,(1,0,0),0)
-        f6 = face((xlo,yhi,bot),(xhi,yhi,bot),(xlo,yhi,zhi),
-                  wall_t, (0,0,1),0,(1,0,0),0)
-        parts.append(write_brush([f1,f2,f3,f4,f5,f6], f"brush {bi} {tag}_{lbl}"))
-        bi += 1
-
-    def wedge_y_ceil(ylo, yhi, xlo, xhi, zlo, zhi, c_tex, lbl):
-        """Ceiling wedge for Y-axis ramp."""
-        nonlocal bi
-        top = z_hi + DOOR_H + H
-        f1 = face((xlo,ylo,top),(xlo,yhi,top),(xhi,ylo,top),
-                  c_tex, (-1,0,0),0,(0,-1,0),0)
-        f2 = face((xlo,ylo,zhi),(xlo,yhi,zlo),(xhi,ylo,zhi),
-                  c_tex, (1,0,0),0,(0,0,-1),0)
-        f3 = face((xlo,ylo,top),(xlo,ylo,zhi),(xlo,yhi,top),
-                  wall_t, (0,-1,0),0,(0,0,-1),0)
-        f4 = face((xhi,yhi,top),(xhi,yhi,zhi),(xhi,ylo,top),
-                  wall_t, (0,1,0),0,(0,0,-1),0)
-        f5 = face((xlo,ylo,top),(xhi,ylo,top),(xlo,ylo,zhi),
-                  wall_t, (0,0,-1),0,(1,0,0),0)
-        f6 = face((xlo,yhi,top),(xlo,yhi,zlo),(xhi,yhi,top),
-                  wall_t, (0,0,1),0,(1,0,0),0)
-        parts.append(write_brush([f1,f2,f3,f4,f5,f6], f"brush {bi} {tag}_{lbl}"))
-        bi += 1
-
-    if axis == 'x':
-        if going_up:
-            # Floor rises x_lo→z_lo to x_hi→z_hi.
-            # Ceiling must mirror: x_lo→z_lo+DH, x_hi→z_hi+DH.
-            # wedge_x_ceil f2 uses (xlo,*,zhi) and (xhi,*,zlo), so
-            # zhi=z_lo+DH (value at xlo) and zlo=z_hi+DH (value at xhi).
-            wedge_x(xmn, xmx, cy-hw, cy+hw, z_lo, z_hi, floor_t, "ramp_fl")
-            wedge_x_ceil(xmn, xmx, cy-hw, cy+hw, z_hi+DOOR_H, z_lo+DOOR_H, ceil_t, "ramp_ce")
+        if za <= zb:
+            # ── upramp: ylo@za(low) → yhi@zb(high) ──────────────────────────
+            # Face normals (inward, verified):
+            #   left x=xlo → +X  |  slope → (+Y,−Z)  |  bottom → +Z
+            #   back y=yhi → −Y  |  right x=xhi → −X
+            ramp5(
+                ((xlo,yhi,za), (xlo,yhi,zb), (xlo,ylo,za)),   # left  x=xlo, +X
+                ((xlo,yhi,zb), (xhi,yhi,zb), (xhi,ylo,za)),   # slope
+                ((xhi,ylo,za), (xhi,yhi,za), (xlo,yhi,za)),   # bottom z=za, +Z
+                ((xhi,yhi,za), (xhi,yhi,zb), (xlo,yhi,zb)),   # back  y=yhi, −Y
+                ((xhi,ylo,za), (xhi,yhi,zb), (xhi,yhi,za)),   # right x=xhi, −X
+                "ramp",
+            )
         else:
-            # Floor drops x_lo→z_hi to x_hi→z_lo.
-            # Ceiling mirrors: x_lo→z_hi+DH, x_hi→z_lo+DH.
-            wedge_x(xmn, xmx, cy-hw, cy+hw, z_hi, z_lo, floor_t, "ramp_fl")
-            wedge_x_ceil(xmn, xmx, cy-hw, cy+hw, z_lo+DOOR_H, z_hi+DOOR_H, ceil_t, "ramp_ce")
+            # ── downramp: ylo@za(high) → yhi@zb(low) ────────────────────────
+            # Face normals (inward, verified):
+            #   left x=xlo → +X  |  front y=ylo → +Y  |  virtual bot → +Z
+            #   slope → (−Y,−Z)  |  right x=xhi → −X
+            ramp5(
+                ((xlo,yhi,zb), (xlo,ylo,za), (xlo,ylo,zb)),          # left  x=xlo, +X
+                ((xlo,ylo,zb), (xlo,ylo,za), (xhi,ylo,za)),          # front y=ylo, +Y
+                ((xlo,yhi,bot),(xlo,ylo,bot),(xhi,ylo,bot)),          # virtual bottom, +Z
+                ((xhi,ylo,za), (xlo,ylo,za), (xlo,yhi,zb)),          # slope
+                ((xhi,ylo,zb), (xhi,ylo,za), (xhi,yhi,zb)),          # right x=xhi, −X
+                "ramp",
+            )
 
-        # side walls — full height so ramp is enclosed on both sides
-        cb(xmn, cy-hw-H, z_lo-H, xmx, cy-hw,   ceil_top+H,
-           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w1")
-        cb(xmn, cy+hw,   z_lo-H, xmx, cy+hw+H, ceil_top+H,
-           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w2")
+    else:  # axis == 'x'
+        # normalise so ax < bx (travel low→high along +X)
+        if x0 > x1:
+            x0, x1 = x1, x0
+            z0, z1 = z1, z0
+        xlo, xhi = x0 + H, x1 - H
+        if xlo >= xhi:
+            return parts, bi
+        cy  = (y0 + y1) // 2
+        ylo, yhi = cy - hw, cy + hw
+        za, zb   = z0, z1
+        bot      = min(za, zb) - H
 
-    else:  # axis == 'y'
-        if going_up:
-            wedge_y(ymn, ymx, cx-hw, cx+hw, z_lo, z_hi, floor_t, "ramp_fl")
-            wedge_y_ceil(ymn, ymx, cx-hw, cx+hw, z_hi+DOOR_H, z_lo+DOOR_H, ceil_t, "ramp_ce")
+        if za <= zb:
+            # ── upramp: xlo@za(low) → xhi@zb(high) ──────────────────────────
+            # Face normals:
+            #   front y=ylo → +Y  |  back y=yhi → −Y  |  bottom → +Z
+            #   end x=xhi → −X   |  slope → (+X,−Z)
+            ramp5(
+                ((xlo,ylo,za), (xhi,ylo,zb), (xhi,ylo,za)),   # front y=ylo, +Y
+                ((xlo,yhi,za), (xhi,yhi,za), (xhi,yhi,zb)),   # back  y=yhi, −Y
+                ((xhi,yhi,za), (xhi,ylo,za), (xlo,ylo,za)),   # bottom z=za, +Z
+                ((xhi,yhi,zb), (xhi,yhi,za), (xhi,ylo,za)),   # end   x=xhi, −X
+                ((xhi,yhi,zb), (xhi,ylo,zb), (xlo,ylo,za)),   # slope
+                "ramp",
+            )
         else:
-            wedge_y(ymn, ymx, cx-hw, cx+hw, z_hi, z_lo, floor_t, "ramp_fl")
-            wedge_y_ceil(ymn, ymx, cx-hw, cx+hw, z_lo+DOOR_H, z_hi+DOOR_H, ceil_t, "ramp_ce")
-
-        cb(cx-hw-H, ymn, z_lo-H, cx-hw,   ymx, ceil_top+H,
-           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w1")
-        cb(cx+hw,   ymn, z_lo-H, cx+hw+H, ymx, ceil_top+H,
-           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w2")
+            # ── downramp: xlo@za(high) → xhi@zb(low) ────────────────────────
+            # Face normals:
+            #   front y=ylo → +Y  |  end x=xlo → +X  |  virtual bot → +Z
+            #   slope → (−X,−Z)  |  back y=yhi → −Y
+            ramp5(
+                ((xlo,ylo,zb), (xlo,ylo,za), (xhi,ylo,za)),          # front y=ylo, +Y
+                ((xlo,yhi,zb), (xlo,yhi,za), (xlo,ylo,zb)),          # end   x=xlo, +X
+                ((xhi,yhi,bot),(xhi,ylo,bot),(xlo,ylo,bot)),          # virtual bottom, +Z
+                ((xhi,ylo,zb), (xlo,ylo,za), (xlo,yhi,za)),          # slope
+                ((xlo,yhi,zb), (xhi,yhi,zb), (xhi,yhi,za)),          # back  y=yhi, −Y
+                "ramp",
+            )
 
     return parts, bi
 
@@ -1053,10 +1000,10 @@ def generate_map(cfg: dict):
                                    doors=room_doors.get(room.idx),
                                    skip_sides=skip_sides)
             lines.extend(parts)
-            # Wall-ramp wedges (~40 % chance per room)
-            if random.random() < 0.4:
-                wr_parts, bi = _wallramp_brushes(room, bi)
-                lines.extend(wr_parts)
+            # Wall-ramp wedges disabled — only directional ramps generated
+            # if random.random() < 0.4:
+            #     wr_parts, bi = _wallramp_brushes(room, bi)
+            #     lines.extend(wr_parts)
 
     # ── Pass 3: ceilings ──────────────────────────────────────────────────────
     for room in rooms:
