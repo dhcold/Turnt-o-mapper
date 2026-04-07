@@ -713,7 +713,8 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
         reach = u_i * t_air
         if i > 0 and cfg.get("height_var", True):
             dz_abs = abs(cz - rooms[i-1].z1)
-            min_ramp_gap = max(64, _snap(dz_abs * 1.2 + 32 + 32, 64))  # dz*1.2 + two WALL_T trims
+            # Target ~15° slope (ratio 3.7:1) — shallow enough for crouchslide
+            min_ramp_gap = max(64, _snap(int(dz_abs * 3.7) + 32, 64))
         else:
             min_ramp_gap = 64
         gap   = max(_snap(random.uniform(0.0, reach * 0.35)), min_ramp_gap)
@@ -951,6 +952,23 @@ def generate_map(cfg: dict):
 
     rooms   = place_rooms(cfg["n_rooms"], cfg)
     bridges = build_bridges(rooms)
+
+    # ── Center map so bounding box midpoint is at (0, 0) and min-Z = 0 ────────
+    if rooms:
+        x_min = min(r.x1 for r in rooms)
+        x_max = max(r.x2 for r in rooms)
+        y_min = min(r.y1 for r in rooms)
+        y_max = max(r.y2 for r in rooms)
+        z_min = min(r.z1 for r in rooms)
+        dx = -((x_min + x_max) // 2)
+        dy = -((y_min + y_max) // 2)
+        dz = -z_min
+        for r in rooms:
+            r.x += dx; r.y += dy; r.z += dz
+        for br in bridges:
+            br.ax += dx; br.bx += dx
+            br.ay += dy; br.by += dy
+            br.az += dz; br.bz += dz
 
     # ── Update travel_axis from actual bridge connections ─────────────────────
     # Do a preliminary pass using bridge directions (no door data yet).
@@ -1557,8 +1575,8 @@ class App(tk.Tk):
         # ─ Tab: Generate ───────────────────────────────────────────────────
     def _tab_generate(self, p):
         # ── Rooms + seed (fixed top section, no scroll) ──────────────────────
-        self._v_rooms = tk.IntVar(value=6)
-        self._slider(p, "Number of rooms", self._v_rooms, 2, 30)
+        self._v_rooms = tk.IntVar(value=10)
+        self._slider(p, "Number of rooms", self._v_rooms, 2, 100)
 
         # Seed row
         sr = ttk.Frame(p, style="P.TFrame")
