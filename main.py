@@ -123,9 +123,36 @@ def write_brush(faces, cmt=""):
     ln.append("}")
     return "\n".join(ln)
 
-def hollow_box(x1,y1,z1, x2,y2,z2,
-               floor_t, ceil_t, wall_t,
-               tag="", bi=0, doors=None):
+def room_floor(x1,y1,z1, x2,y2,z2, floor_t, tag, bi, clips=()):
+    """Floor brush(es) — inner XY footprint minus any later-room clip regions."""
+    H   = WALL_T
+    oz1 = z1 - H
+    parts = []
+    for rx1,ry1,rx2,ry2 in _clip_footprint(x1, y1, x2, y2, clips):
+        if rx1 < rx2 and ry1 < ry2 and oz1 < z1:
+            fs = box_faces(rx1,ry1,oz1, rx2,ry2,z1,
+                           floor_t,floor_t,floor_t,floor_t,floor_t,floor_t)
+            parts.append(write_brush(fs, f"brush {bi} {tag}_floor"))
+            bi += 1
+    return parts, bi
+
+
+def room_ceiling(x1,y1,z1, x2,y2,z2, ceil_t, tag, bi, clips=()):
+    """Ceiling brush(es) — inner XY footprint minus any later-room clip regions."""
+    H   = WALL_T
+    oz2 = z2 + H
+    parts = []
+    for rx1,ry1,rx2,ry2 in _clip_footprint(x1, y1, x2, y2, clips):
+        if rx1 < rx2 and ry1 < ry2 and z2 < oz2:
+            fs = box_faces(rx1,ry1,z2, rx2,ry2,oz2,
+                           ceil_t,ceil_t,ceil_t,ceil_t,ceil_t,ceil_t)
+            parts.append(write_brush(fs, f"brush {bi} {tag}_ceil"))
+            bi += 1
+    return parts, bi
+
+
+def room_walls(x1,y1,z1, x2,y2,z2, wall_t, tag, bi, doors=None, skip_sides=None):
+    """4 side walls with door cutouts.  Sides listed in skip_sides are omitted."""
     H   = WALL_T
     ox1,oy1,oz1 = x1-H, y1-H, z1-H
     ox2,oy2,oz2 = x2+H, y2+H, z2+H
@@ -136,82 +163,61 @@ def hollow_box(x1,y1,z1, x2,y2,z2,
         for d in doors:
             door_map.setdefault(d['wall'], []).append(d)
 
-    has_door = set(door_map.keys())
-
-    def rb(ax1,ay1,az1, ax2,ay2,az2,
-           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=floor_t,pz=floor_t, lbl=""):
-        """All faces get real textures — no caulk hiding faces from visibility."""
+    def rb(ax1,ay1,az1, ax2,ay2,az2, lbl=""):
         nonlocal bi
         if ax1 >= ax2 or ay1 >= ay2 or az1 >= az2:
             return
-        fs = box_faces(ax1,ay1,az1,ax2,ay2,az2, nx,px,ny,py,nz,pz)
+        fs = box_faces(ax1,ay1,az1,ax2,ay2,az2,
+                       wall_t,wall_t,wall_t,wall_t,wall_t,wall_t)
         parts.append(write_brush(fs, f"brush {bi} {tag}_{lbl}"))
         bi += 1
 
-    def wall_y(bx1, bx2, by1, by2, bz1, bz2, wall_name, **face_kw):
-        """Wall spanning the Y axis — cut door openings along Y."""
+    def wall_y(bx1, bx2, by1, by2, bz1, bz2, wall_name):
+        """Wall panel along Y axis — cut door openings."""
         ds = door_map.get(wall_name)
         if not ds:
-            rb(bx1, by1, bz1, bx2, by2, bz2, lbl=wall_name, **face_kw)
+            rb(bx1, by1, bz1, bx2, by2, bz2, lbl=wall_name)
             return
         d = ds[0]
         yc = d['center'];  hw = d['hw']
         z_b = d['z_bot'];  z_t = min(z_b + d['ht'], bz2)
-        # section below door opening (floor thickness to door base)
         if z_b > bz1:
-            rb(bx1, by1, bz1, bx2, by2, z_b, lbl=f"{wall_name}_bot", **face_kw)
+            rb(bx1, by1, bz1, bx2, by2, z_b,    lbl=f"{wall_name}_bot")
         if z_t < bz2:
-            rb(bx1, by1,   z_t, bx2, by2,   bz2, lbl=f"{wall_name}_top", **face_kw)
+            rb(bx1, by1, z_t, bx2, by2, bz2,    lbl=f"{wall_name}_top")
         if yc - hw > by1:
-            rb(bx1, by1,   z_b, bx2, yc-hw, z_t,  lbl=f"{wall_name}_l",  **face_kw)
+            rb(bx1, by1,   z_b, bx2, yc-hw, z_t, lbl=f"{wall_name}_l")
         if yc + hw < by2:
-            rb(bx1, yc+hw, z_b, bx2, by2,   z_t,  lbl=f"{wall_name}_r",  **face_kw)
+            rb(bx1, yc+hw, z_b, bx2, by2,   z_t, lbl=f"{wall_name}_r")
 
-    def wall_x(bx1, bx2, by1, by2, bz1, bz2, wall_name, **face_kw):
-        """Wall spanning the X axis — cut door openings along X."""
+    def wall_x(bx1, bx2, by1, by2, bz1, bz2, wall_name):
+        """Wall panel along X axis — cut door openings."""
         ds = door_map.get(wall_name)
         if not ds:
-            rb(bx1, by1, bz1, bx2, by2, bz2, lbl=wall_name, **face_kw)
+            rb(bx1, by1, bz1, bx2, by2, bz2, lbl=wall_name)
             return
         d = ds[0]
         xc = d['center'];  hw = d['hw']
         z_b = d['z_bot'];  z_t = min(z_b + d['ht'], bz2)
-        # section below door opening
         if z_b > bz1:
-            rb(bx1, by1, bz1, bx2, by2, z_b, lbl=f"{wall_name}_bot", **face_kw)
+            rb(bx1, by1, bz1, bx2, by2, z_b,     lbl=f"{wall_name}_bot")
         if z_t < bz2:
-            rb(bx1,   by1, z_t, bx2,   by2, bz2,  lbl=f"{wall_name}_top", **face_kw)
+            rb(bx1, by1, z_t, bx2, by2, bz2,     lbl=f"{wall_name}_top")
         if xc - hw > bx1:
-            rb(bx1,   by1, z_b, xc-hw, by2, z_t,  lbl=f"{wall_name}_l",   **face_kw)
+            rb(bx1,   by1, z_b, xc-hw, by2, z_t, lbl=f"{wall_name}_l")
         if xc + hw < bx2:
-            rb(xc+hw, by1, z_b, bx2,   by2, z_t,  lbl=f"{wall_name}_r",   **face_kw)
+            rb(xc+hw, by1, z_b, bx2,   by2, z_t, lbl=f"{wall_name}_r")
 
-    # Floor and ceiling — inner footprint only (no XY extension) to avoid
-    # Z-fighting with neighbouring room brushes at the shared boundary plane.
-    rb(x1,y1,oz1, x2,y2,z1,
-       nx=floor_t,px=floor_t,ny=floor_t,py=floor_t,nz=floor_t,pz=floor_t,
-       lbl="floor")
-    rb(x1,y1,z2, x2,y2,oz2,
-       nx=ceil_t,px=ceil_t,ny=ceil_t,py=ceil_t,nz=ceil_t,pz=ceil_t,
-       lbl="ceil")
-
-    # Walls extend the full Z range (oz1→oz2) so they cover floor+ceiling
-    # thickness under their own footprint — no separate corner brushes needed.
-    # On door sides the outer caulk shell is collapsed to zero thickness to
-    # prevent co-planar face overlap with the corridor brushes.
-    wx1_outer_x2 = x1  if 'wx1' in has_door else ox1
-    wx2_outer_x1 = x2  if 'wx2' in has_door else ox2
-    wy1_outer_y2 = y1  if 'wy1' in has_door else oy1
-    wy2_outer_y1 = y2  if 'wy2' in has_door else oy2
-
-    wall_y(ox1,          wx1_outer_x2, y1,y2, oz1,oz2, 'wx1',
-           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t)
-    wall_y(wx2_outer_x1, ox2,          y1,y2, oz1,oz2, 'wx2',
-           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t)
-    wall_x(ox1,ox2, oy1,          wy1_outer_y2, oz1,oz2, 'wy1',
-           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t)
-    wall_x(ox1,ox2, wy2_outer_y1, oy2,          oz1,oz2, 'wy2',
-           nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t)
+    # Generate the 4 walls; skip any that are interior to an overlapping room.
+    skip = skip_sides or set()
+    if 'wx1' not in skip:
+        wall_y(ox1, x1,  y1, y2, oz1, oz2, 'wx1')   # left  wall (x-min side)
+    if 'wx2' not in skip:
+        wall_y(x2,  ox2, y1, y2, oz1, oz2, 'wx2')   # right wall (x-max side)
+    if 'wy1' not in skip:
+        wall_x(ox1, ox2, oy1, y1, oz1, oz2, 'wy1')  # front wall (y-min side)
+    if 'wy2' not in skip:
+        wall_x(ox1, ox2, y2,  oy2, oz1, oz2, 'wy2') # back  wall (y-max side)
 
     return parts, bi
 
@@ -336,11 +342,17 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
 
     if axis == 'x':
         if going_up:
+            # Floor rises x_lo→z_lo to x_hi→z_hi.
+            # Ceiling must mirror: x_lo→z_lo+DH, x_hi→z_hi+DH.
+            # wedge_x_ceil f2 uses (xlo,*,zhi) and (xhi,*,zlo), so
+            # zhi=z_lo+DH (value at xlo) and zlo=z_hi+DH (value at xhi).
             wedge_x(xmn, xmx, cy-hw, cy+hw, z_lo, z_hi, floor_t, "ramp_fl")
-            wedge_x_ceil(xmn, xmx, cy-hw, cy+hw, z_lo+DOOR_H, z_hi+DOOR_H, ceil_t, "ramp_ce")
-        else:
-            wedge_x(xmn, xmx, cy-hw, cy+hw, z_hi, z_lo, floor_t, "ramp_fl")
             wedge_x_ceil(xmn, xmx, cy-hw, cy+hw, z_hi+DOOR_H, z_lo+DOOR_H, ceil_t, "ramp_ce")
+        else:
+            # Floor drops x_lo→z_hi to x_hi→z_lo.
+            # Ceiling mirrors: x_lo→z_hi+DH, x_hi→z_lo+DH.
+            wedge_x(xmn, xmx, cy-hw, cy+hw, z_hi, z_lo, floor_t, "ramp_fl")
+            wedge_x_ceil(xmn, xmx, cy-hw, cy+hw, z_lo+DOOR_H, z_hi+DOOR_H, ceil_t, "ramp_ce")
 
         # side walls — full height so ramp is enclosed on both sides
         cb(xmn, cy-hw-H, z_lo-H, xmx, cy-hw,   ceil_top+H,
@@ -351,10 +363,10 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
     else:  # axis == 'y'
         if going_up:
             wedge_y(ymn, ymx, cx-hw, cx+hw, z_lo, z_hi, floor_t, "ramp_fl")
-            wedge_y_ceil(ymn, ymx, cx-hw, cx+hw, z_lo+DOOR_H, z_hi+DOOR_H, ceil_t, "ramp_ce")
+            wedge_y_ceil(ymn, ymx, cx-hw, cx+hw, z_hi+DOOR_H, z_lo+DOOR_H, ceil_t, "ramp_ce")
         else:
             wedge_y(ymn, ymx, cx-hw, cx+hw, z_hi, z_lo, floor_t, "ramp_fl")
-            wedge_y_ceil(ymn, ymx, cx-hw, cx+hw, z_hi+DOOR_H, z_lo+DOOR_H, ceil_t, "ramp_ce")
+            wedge_y_ceil(ymn, ymx, cx-hw, cx+hw, z_lo+DOOR_H, z_hi+DOOR_H, ceil_t, "ramp_ce")
 
         cb(cx-hw-H, ymn, z_lo-H, cx-hw,   ymx, ceil_top+H,
            nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=wall_t,pz=wall_t, lbl="w1")
@@ -545,6 +557,32 @@ def _snap(v, grid=64):
 def _clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
+def _xy_overlap(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2) -> bool:
+    return ax1 < bx2 and ax2 > bx1 and ay1 < by2 and ay2 > by1
+
+def _subtract_rect(rx1, ry1, rx2, ry2, ox1, oy1, ox2, oy2):
+    """Subtract obstacle from rect. Returns up to 4 surrounding pieces."""
+    cx1 = max(rx1, ox1); cy1 = max(ry1, oy1)
+    cx2 = min(rx2, ox2); cy2 = min(ry2, oy2)
+    if cx1 >= cx2 or cy1 >= cy2:
+        return [(rx1, ry1, rx2, ry2)]
+    return [(x1,y1,x2,y2) for x1,y1,x2,y2 in [
+        (rx1, ry1, cx1, ry2),   # left of obstacle
+        (cx2, ry1, rx2, ry2),   # right of obstacle
+        (cx1, ry1, cx2, cy1),   # below obstacle (centre strip)
+        (cx1, cy2, cx2, ry2),   # above obstacle (centre strip)
+    ] if x1 < x2 and y1 < y2]
+
+def _clip_footprint(x1, y1, x2, y2, clips):
+    """Return list of rects after subtracting all clip regions."""
+    rects = [(x1, y1, x2, y2)]
+    for cx1,cy1,cx2,cy2 in clips:
+        new_rects = []
+        for r in rects:
+            new_rects.extend(_subtract_rect(*r, cx1, cy1, cx2, cy2))
+        rects = new_rects
+    return rects
+
 
 def _room_dims_from_physics(i: int, cfg: dict) -> Tuple[int, int, int, int, float]:
     """Return (room_len, room_cross, room_h, door_hw, u_i) for room index i.
@@ -579,10 +617,10 @@ def _room_dims_from_physics(i: int, cfg: dict) -> Tuple[int, int, int, int, floa
                           cfg.get("min_h", 192),
                           cfg.get("max_h", 512)))
 
-    # door_hw must be strictly < room_cross/2 so it fits through adjacent rooms.
-    # Use 1/3 of cross-width: gives a door that is 2/3 of the room width,
-    # leaving wall sections on each side and satisfying _pick_overlap_center.
-    door_hw = _snap(_clamp(room_cross // 3, 32, 128))
+    # door_hw = corridor_width_frac * room_cross / 2
+    # 0.5 → narrow (current default), 1.0 → full-width (rooms flow together)
+    corr_frac = cfg.get("corridor_width_frac", 0.67)
+    door_hw = _snap(_clamp(int(room_cross * corr_frac / 2), 32, room_cross // 2))
     return room_len, room_cross, room_h, door_hw, u_i
 
 
@@ -739,12 +777,22 @@ def _pick_overlap_center(a1: int, a2: int, b1: int, b2: int,
 def _try_bridge(i: int, j: int, rooms: List['Room']) -> Optional['Bridge']:
     """Attempt to build a bridge between rooms[i] and rooms[j].
 
-    Returns a Bridge or None if no spatial overlap allows a corridor.
+    When rooms are directly adjacent (gap = 0), the opening spans the full
+    shared edge width — no separate corridor brush is generated (corridor_brushes
+    returns empty when ax == bx / ay == by).
+    When rooms overlap in XY, no bridge is needed (they share open space).
     """
     a, b = rooms[i], rooms[j]
-    dhw  = min(a.door_hw, b.door_hw)
+
+    def _dhw(gap, cross_a, cross_b):
+        """Door half-width: full-edge when gap=0, physics-based otherwise."""
+        if gap == 0:
+            return min(cross_a, cross_b) // 2
+        return min(a.door_hw, b.door_hw)
 
     if b.x1 >= a.x2:                        # b is to the right of a
+        gap = b.x1 - a.x2
+        dhw = _dhw(gap, a.d, b.d)
         yc = _pick_overlap_center(a.y1, a.y2, b.y1, b.y2, dhw)
         if yc is not None:
             return Bridge(i, j, 'x', a.x2, yc, a.z1, b.x1, yc, b.z1,
@@ -753,6 +801,8 @@ def _try_bridge(i: int, j: int, rooms: List['Room']) -> Optional['Bridge']:
                           wall_t =random.choice(WALL_TEX),
                           ceil_t =random.choice(CEIL_TEX))
     elif a.x1 >= b.x2:                      # b is to the left of a
+        gap = a.x1 - b.x2
+        dhw = _dhw(gap, a.d, b.d)
         yc = _pick_overlap_center(a.y1, a.y2, b.y1, b.y2, dhw)
         if yc is not None:
             return Bridge(i, j, 'x', a.x1, yc, a.z1, b.x2, yc, b.z1,
@@ -761,6 +811,8 @@ def _try_bridge(i: int, j: int, rooms: List['Room']) -> Optional['Bridge']:
                           wall_t =random.choice(WALL_TEX),
                           ceil_t =random.choice(CEIL_TEX))
     elif b.y1 >= a.y2:                      # b is above a in Y
+        gap = b.y1 - a.y2
+        dhw = _dhw(gap, a.w, b.w)
         xc = _pick_overlap_center(a.x1, a.x2, b.x1, b.x2, dhw)
         if xc is not None:
             return Bridge(i, j, 'y', xc, a.y2, a.z1, xc, b.y1, b.z1,
@@ -769,6 +821,8 @@ def _try_bridge(i: int, j: int, rooms: List['Room']) -> Optional['Bridge']:
                           wall_t =random.choice(WALL_TEX),
                           ceil_t =random.choice(CEIL_TEX))
     elif a.y1 >= b.y2:                      # b is below a in Y
+        gap = a.y1 - b.y2
+        dhw = _dhw(gap, a.w, b.w)
         xc = _pick_overlap_center(a.x1, a.x2, b.x1, b.x2, dhw)
         if xc is not None:
             return Bridge(i, j, 'y', xc, a.y1, a.z1, xc, b.y2, b.z1,
@@ -776,6 +830,7 @@ def _try_bridge(i: int, j: int, rooms: List['Room']) -> Optional['Bridge']:
                           floor_t=random.choice(FLOOR_TEX),
                           wall_t =random.choice(WALL_TEX),
                           ceil_t =random.choice(CEIL_TEX))
+    # Rooms overlap in XY — open space is shared, no bridge needed
     return None
 
 
@@ -843,6 +898,35 @@ def ent_brush_box(cls, x1,y1,z1, x2,y2,z2, target="", extra=None):
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAIN GENERATOR
 # ══════════════════════════════════════════════════════════════════════════════
+def align_room_ceilings(rooms: List['Room'], bridges: List['Bridge']):
+    """Raise room ceilings so all connected rooms share the same ceiling Z.
+
+    Uses a fixed-point loop so ceiling heights propagate correctly even
+    through shortcut bridges that are processed after sequential ones.
+    Also guarantees each room is tall enough for any ramp corridor to fit.
+    """
+    n = len(rooms)
+    ceil_z = [r.z1 + r.h for r in rooms]
+
+    changed = True
+    while changed:
+        changed = False
+        for br in bridges:
+            a, b = rooms[br.room_a], rooms[br.room_b]
+            ia, ib = br.room_a, br.room_b
+            # Min ceiling = higher floor + DOOR_H + WALL_T (ramp headroom)
+            z_hi = max(a.z1, b.z1)
+            min_ceil = z_hi + DOOR_H + WALL_T
+            target = max(ceil_z[ia], ceil_z[ib], min_ceil)
+            if ceil_z[ia] < target:
+                ceil_z[ia] = target; changed = True
+            if ceil_z[ib] < target:
+                ceil_z[ib] = target; changed = True
+
+    for i, room in enumerate(rooms):
+        room.h = _snap(ceil_z[i]) - room.z1
+
+
 def generate_map(cfg: dict):
     seed = cfg.get("seed")
     if seed is not None:
@@ -851,22 +935,9 @@ def generate_map(cfg: dict):
     rooms   = place_rooms(cfg["n_rooms"], cfg)
     bridges = build_bridges(rooms)
 
-    lines = [
-        "// Game: Quake 3",
-        "// Format: Valve",
-        f"// Generated by Turnt-o-mator v3 | rooms={cfg['n_rooms']} seed={seed}",
-        "// entity 0",
-        "{",
-        '"mapversion" "220"',
-        '"classname" "worldspawn"',
-        '"_ambient" "15"',
-        f'"message" "{cfg.get("map_name","turnt_map")}"',
-    ]
-
-    bi = 0
-    # Build per-room door cutout data from bridges.
+    # ── Per-room door cutout data (from bridges) ──────────────────────────────
     # z_bot references the BRIDGE endpoint Z so the cutout aligns with the
-    # actual corridor floor even when rooms are at different heights.
+    # corridor floor even when rooms are at different heights.
     room_doors: Dict[int, list] = {i: [] for i in range(len(rooms))}
     for br in bridges:
         hw = br.door_hw
@@ -881,19 +952,94 @@ def generate_map(cfg: dict):
             room_doors[br.room_b].append(
                 {'wall':'wy1','center':br.ax,'hw':hw,'ht':DOOR_H,'z_bot':br.bz})
 
+    # ── Update travel_axis from actual bridge connections ─────────────────────
+    # Overrides the layout-direction guess; prevents deadzones / "tails".
+    for i, room in enumerate(rooms):
+        walls = {d['wall'] for d in room_doors.get(i, [])}
+        x_walls = walls & {'wx1', 'wx2'}
+        y_walls = walls & {'wy1', 'wy2'}
+        if x_walls and not y_walls:
+            room.travel_axis = 'x'
+        elif y_walls and not x_walls:
+            room.travel_axis = 'y'
+        elif x_walls and y_walls:
+            # Corner room — align long axis with bridge direction
+            room.travel_axis = 'x' if room.w >= room.d else 'y'
+        # else: isolated room (no bridges), keep original axis
+
+    # ── Align ceiling heights so adjacent rooms feel continuous ───────────────
+    align_room_ceilings(rooms, bridges)
+
+    # ── Compute clip regions: for each room, collect footprints of later rooms
+    #    that overlap it in XY.  Later rooms "win" — older geometry is clipped.
+    room_clips: Dict[int, list] = {i: [] for i in range(len(rooms))}
+    for i in range(len(rooms)):
+        ri = rooms[i]
+        for j in range(i + 1, len(rooms)):
+            rj = rooms[j]
+            if _xy_overlap(ri.x1, ri.y1, ri.x2, ri.y2,
+                           rj.x1, rj.y1, rj.x2, rj.y2):
+                room_clips[i].append((rj.x1, rj.y1, rj.x2, rj.y2))
+
+    lines = [
+        "// Game: Quake 3",
+        "// Format: Valve",
+        f"// Generated by Turnt-o-mator v3 | rooms={cfg['n_rooms']} seed={seed}",
+        "// entity 0",
+        "{",
+        '"mapversion" "220"',
+        '"classname" "worldspawn"',
+        '"_ambient" "15"',
+        f'"message" "{cfg.get("map_name","turnt_map")}"',
+    ]
+
+    bi = 0
+
+    # ── Pass 1: floors ────────────────────────────────────────────────────────
     for room in rooms:
-        parts, bi = hollow_box(room.x1, room.y1, room.z1,
-                               room.x2, room.y2, room.z2,
-                               room.floor_t, room.ceil_t, room.wall_t,
-                               tag=f"r{room.idx}", bi=bi,
-                               doors=room_doors.get(room.idx))
+        clips = room_clips[room.idx]
+        parts, bi = room_floor(room.x1,room.y1,room.z1, room.x2,room.y2,room.z2,
+                               room.floor_t, f"r{room.idx}", bi, clips=clips)
         lines.extend(parts)
 
-        # Add wall-ramp wedges (~40 % chance per room)
-        if random.random() < 0.4:
-            wr_parts, bi = _wallramp_brushes(room, bi)
-            lines.extend(wr_parts)
+    # ── Pass 2: walls ─────────────────────────────────────────────────────────
+    for room in rooms:
+        clips = room_clips[room.idx]
+        # Fully contained: all clip rects together cover the whole room footprint
+        contained = any(
+            cx1 <= room.x1 and room.x2 <= cx2 and cy1 <= room.y1 and room.y2 <= cy2
+            for cx1,cy1,cx2,cy2 in clips
+        ) if clips else False
 
+        if not contained:
+            # Determine which wall sides are buried inside a later room's interior
+            skip_sides: set = set()
+            for cx1,cy1,cx2,cy2 in clips:
+                y_ov = cy1 < room.y2 and cy2 > room.y1
+                x_ov = cx1 < room.x2 and cx2 > room.x1
+                if cx1 < room.x1 < cx2 and y_ov:  skip_sides.add('wx1')
+                if cx1 < room.x2 < cx2 and y_ov:  skip_sides.add('wx2')
+                if cy1 < room.y1 < cy2 and x_ov:  skip_sides.add('wy1')
+                if cy1 < room.y2 < cy2 and x_ov:  skip_sides.add('wy2')
+
+            parts, bi = room_walls(room.x1,room.y1,room.z1, room.x2,room.y2,room.z2,
+                                   room.wall_t, f"r{room.idx}", bi,
+                                   doors=room_doors.get(room.idx),
+                                   skip_sides=skip_sides)
+            lines.extend(parts)
+            # Wall-ramp wedges (~40 % chance per room)
+            if random.random() < 0.4:
+                wr_parts, bi = _wallramp_brushes(room, bi)
+                lines.extend(wr_parts)
+
+    # ── Pass 3: ceilings ──────────────────────────────────────────────────────
+    for room in rooms:
+        clips = room_clips[room.idx]
+        parts, bi = room_ceiling(room.x1,room.y1,room.z1, room.x2,room.y2,room.z2,
+                                 room.ceil_t, f"r{room.idx}", bi, clips=clips)
+        lines.extend(parts)
+
+    # ── Pass 4: corridors / ramps ─────────────────────────────────────────────
     for br in bridges:
         parts, bi = corridor_brushes(
             br.ax, br.ay, br.az,
@@ -1742,6 +1888,23 @@ class App(tk.Tk):
         self._v_door_h = tk.IntVar(value=128)
         self._spinbox(f, self._v_door_h, 64, 512, 32)
 
+        self._sec(p, "Corridor width  (fraction of room cross-width)")
+        cw_frame = ttk.Frame(p, style="P.TFrame")
+        cw_frame.pack(fill="x", pady=(0, 8))
+        self._v_corr_frac = tk.DoubleVar(value=0.67)
+        cw_lbl_var = tk.StringVar(value="67%")
+        def _update_cw_lbl(*_):
+            v = self._v_corr_frac.get()
+            if v >= 0.98:
+                cw_lbl_var.set("100%  (full-width, open)")
+            else:
+                cw_lbl_var.set(f"{int(v*100)}%")
+        self._v_corr_frac.trace_add("write", _update_cw_lbl)
+        ttk.Scale(cw_frame, from_=0.25, to=1.0, variable=self._v_corr_frac,
+                  orient="horizontal").pack(fill="x", padx=4)
+        ttk.Label(cw_frame, textvariable=cw_lbl_var, style="Pd.TLabel",
+                  font=("Segoe UI", 8)).pack(anchor="e", padx=4)
+
         self._sec(p, "Preview legend")
         for color, label in [
             (T["start_col"], "Start room"),
@@ -2009,6 +2172,7 @@ class App(tk.Tk):
             "map_name":     self._v_mapname.get(),
             "height_var":   self._v_height.get(),
             "checkpoints":  self._v_checks.get(),
+            "corridor_width_frac": self._v_corr_frac.get(),
         }
 
     def _on_generate(self):
@@ -2093,22 +2257,40 @@ class App(tk.Tk):
                           font=("Segoe UI", 12), justify="center")
             return
 
-        rooms = self._rooms
+        rooms   = self._rooms
+        bridges = self._bridges
         all_x = [r.x1 for r in rooms] + [r.x2 for r in rooms]
         all_y = [r.y1 for r in rooms] + [r.y2 for r in rooms]
         mx, my = min(all_x), min(all_y)
         rw = max(all_x) - mx
         rh = max(all_y) - my
 
-        PAD = 40
-        sc  = min((W-PAD*2) / max(rw, 1),
-                  (H-PAD*2) / max(rh, 1))
+        PAD = 44
+        sc  = min((W - PAD*2 - 24) / max(rw, 1),
+                  (H - PAD*2 - 20) / max(rh, 1))
 
         def tx(v): return PAD + (v - mx) * sc
         def ty(v): return H - PAD - (v - my) * sc
 
-        # Bridges
-        for br in self._bridges:
+        # Z range for height colour coding
+        all_z   = [r.z1 for r in rooms]
+        z_min   = min(all_z)
+        z_max   = max(all_z)
+        z_range = max(z_max - z_min, 1)
+
+        # Build per-room wall→(center,hw) table for arrow drawing
+        room_exits: Dict[int, list] = {}   # room_idx → [(wall, center, hw), …]
+        for br in bridges:
+            hw = br.door_hw
+            if br.axis == 'x':
+                room_exits.setdefault(br.room_a, []).append(('wx2', br.ay, hw))
+                room_exits.setdefault(br.room_b, []).append(('wx1', br.ay, hw))
+            else:
+                room_exits.setdefault(br.room_a, []).append(('wy2', br.ax, hw))
+                room_exits.setdefault(br.room_b, []).append(('wy1', br.ax, hw))
+
+        # ── Bridges ──────────────────────────────────────────────────────────
+        for br in bridges:
             hw = br.door_hw
             if br.axis == 'x':
                 xmn = min(br.ax, br.bx); xmx = max(br.ax, br.bx)
@@ -2125,7 +2307,7 @@ class App(tk.Tk):
                                    fill=T["corr_col"],
                                    outline=T["border"], width=1)
 
-        # Rooms
+        # ── Rooms ─────────────────────────────────────────────────────────────
         n = len(rooms)
         for i, room in enumerate(rooms):
             if i == 0:
@@ -2133,43 +2315,107 @@ class App(tk.Tk):
             elif i == n - 1:
                 fill, bdr = T["end_col"], T["accent"]
             else:
-                # colour shifts blue→cyan as speed increases
+                # Blue-cyan gradient by speed, brightened by Z height
                 t_s = (room.speed_in - 550) / max(1, 60 * n)
                 t_s = max(0.0, min(1.0, t_s))
-                r_c = int(0x1e + t_s*(0x18-0x1e))
-                g_c = int(0x39 + t_s*(0x70-0x39))
-                b_c = int(0x60 + t_s*(0x90-0x60))
+                t_z = (room.z1 - z_min) / z_range
+                r_c = max(0, min(255, int(0x1e + t_s*(0x18-0x1e))))
+                g_c = max(0, min(255, int(0x3a + t_s*(0x70-0x3a) + t_z*0x35)))
+                b_c = max(0, min(255, int(0x62 + t_s*(0x90-0x62))))
                 fill = f"#{r_c:02x}{g_c:02x}{b_c:02x}"
                 bdr  = T["room_bdr"]
 
-            x1s, y1s = tx(room.x1), ty(room.y1)
-            x2s, y2s = tx(room.x2), ty(room.y2)
-            c.create_rectangle(x1s, y1s, x2s, y2s,
+            # Screen coords — ty flips Y so larger world-Y is higher on screen
+            ls = tx(room.x1); rs = tx(room.x2)
+            ts = ty(room.y2); bs = ty(room.y1)   # top-screen = max world-Y
+            c.create_rectangle(ls, ts, rs, bs,
                                fill=fill, outline=bdr, width=2)
 
-            # travel direction arrow
-            cxs = (x1s + x2s) / 2
-            cys = (y1s + y2s) / 2
-            fs  = max(7, min(13, int(min(abs(x2s-x1s), abs(y2s-y1s)) / 3.5)))
-            arrow = "→" if room.travel_axis == 'x' else "↑"
-            c.create_text(cxs, cys - fs * 0.7,
-                          text=str(i+1), fill=T["text"],
-                          font=("Segoe UI", fs, "bold"))
-            c.create_text(cxs, cys + fs * 0.7,
-                          text=arrow, fill=T["accent"],
-                          font=("Segoe UI", max(7, fs-1)))
+            pw = rs - ls   # pixel width
+            ph = bs - ts   # pixel height
+            cxs = (ls + rs) / 2
+            cys = (ts + bs) / 2
+            fs  = max(7, min(14, int(min(pw, ph) / 4)))
 
-            # speed label
-            c.create_text(cxs, cys + fs * 2.0,
-                          text=f"{room.speed_in:.0f}",
-                          fill=T["text_dim"],
-                          font=("Segoe UI", max(6, fs-2)))
+            # ── Room number — top-left ─────────────────────────────────────
+            c.create_text(ls + 4, ts + 3,
+                          text=str(i+1),
+                          fill="white",
+                          font=("Segoe UI", max(8, fs), "bold"),
+                          anchor="nw")
 
-        # Legend
+            # ── Z height — top-right ───────────────────────────────────────
+            z_label = f"z{room.z1:+d}" if room.z1 != 0 else "z0"
+            c.create_text(rs - 4, ts + 3,
+                          text=z_label,
+                          fill="#7fb8d0",
+                          font=("Consolas", max(6, fs-2)),
+                          anchor="ne")
+
+            # ── Speed — bottom-left ────────────────────────────────────────
+            c.create_text(ls + 4, bs - 3,
+                          text=f"{room.speed_in:.0f}u",
+                          fill=T["accent2"],
+                          font=("Segoe UI", max(6, fs-2), "bold"),
+                          anchor="sw")
+
+            # ── Exit / entry arrows on door walls ─────────────────────────
+            exits = room_exits.get(i, [])
+            AW = max(2, int(min(pw, ph) * 0.05))
+
+            for wall_name, center, hw in exits:
+                # Classify: exits (room_a) get solid arrows; entries get dashed
+                # We determine by whether this room is the source (room_a) in any bridge
+                is_exit = any(
+                    (br.room_a == i and br.axis == 'x' and wall_name == 'wx2') or
+                    (br.room_a == i and br.axis == 'y' and wall_name == 'wy2') or
+                    (br.room_b == i and br.axis == 'x' and wall_name == 'wx1') or
+                    (br.room_b == i and br.axis == 'y' and wall_name == 'wy1')
+                    for br in bridges
+                )
+                arrow_col = "#ffdd33" if is_exit else "#66aacc"
+                a_w = AW if is_exit else max(1, AW-1)
+
+                if wall_name == 'wx2':        # right wall →
+                    cx_d = rs; cy_d = ty(center)
+                    c.create_line(cxs, cys, cx_d, cy_d,
+                                  fill=arrow_col, width=a_w,
+                                  arrow="last", arrowshape=(9,11,4))
+                elif wall_name == 'wx1':      # left wall ←
+                    cx_d = ls; cy_d = ty(center)
+                    c.create_line(cxs, cys, cx_d, cy_d,
+                                  fill=arrow_col, width=a_w,
+                                  arrow="last", arrowshape=(9,11,4))
+                elif wall_name == 'wy2':      # back wall (high Y) ↑ on screen
+                    cx_d = tx(center); cy_d = ts
+                    c.create_line(cxs, cys, cx_d, cy_d,
+                                  fill=arrow_col, width=a_w,
+                                  arrow="last", arrowshape=(9,11,4))
+                elif wall_name == 'wy1':      # front wall (low Y) ↓ on screen
+                    cx_d = tx(center); cy_d = bs
+                    c.create_line(cxs, cys, cx_d, cy_d,
+                                  fill=arrow_col, width=a_w,
+                                  arrow="last", arrowshape=(9,11,4))
+
+        # ── Z-height scale bar (right edge) ───────────────────────────────────
+        if z_min != z_max:
+            sx = W - 18
+            for py in range(int(PAD), int(H - PAD)):
+                t = 1.0 - (py - PAD) / max(H - PAD*2, 1)
+                gv = int(0x28 + t * 0x88)
+                c.create_line(sx, py, sx+10, py,
+                              fill=f"#1e{gv:02x}60")
+            c.create_text(sx+5, PAD-2,   text=f"+{z_max}",
+                          fill=T["text_dim"], font=("Consolas", 7), anchor="s")
+            c.create_text(sx+5, H-PAD+2, text=f"{z_min}",
+                          fill=T["text_dim"], font=("Consolas", 7), anchor="n")
+
+        # ── Legend ────────────────────────────────────────────────────────────
         items = [("■ Start", T["success"]), ("■ Rooms", T["room_col"]),
-                 ("■ End",   T["accent"]),  ("━ Bridge", T["corr_col"])]
+                 ("■ End",   T["accent"]),  ("━ Bridge", T["corr_col"]),
+                 ("→ Exit", "#ffdd33"),     ("→ Entry", "#66aacc")]
         for j, (txt, col) in enumerate(items):
-            c.create_text(PAD + j*100, H-14, text=txt,
+            c.create_text(PAD + j*88, H-13, text=txt,
                           fill=col, font=("Segoe UI", 8), anchor="w")
 
 
