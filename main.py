@@ -222,7 +222,8 @@ def room_walls(x1,y1,z1, x2,y2,z2, wall_t, tag, bi, doors=None, skip_sides=None)
     return parts, bi
 
 def _ramp_brushes(x0, y0, z0, x1, y1, z1,
-                   axis, hw, floor_t, ceil_t, wall_t,
+                   axis, hw, door_ht,
+                   floor_t, ceil_t, wall_t,
                    tag, bi):
     """Single 5-face pentahedron floor-wedge ramp per the reference map geometry,
     plus ceiling and side-wall box brushes to enclose the ramp corridor.
@@ -296,7 +297,7 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
 
         # ── enclosure brushes for axis=='y' ramp ─────────────────────────────
         z_lo, z_hi = min(za, zb), max(za, zb)
-        ceil_top = z_hi + DOOR_H
+        ceil_top = z_hi + door_ht   # match door opening height
         # ceiling (flat box above the high end's clearance height)
         cb(xlo, ylo, ceil_top, xhi, yhi, ceil_top + H,
            nx=ceil_t, px=ceil_t, ny=ceil_t, py=ceil_t, nz=ceil_t, pz=ceil_t,
@@ -327,7 +328,7 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
             ramp5(
                 ((xlo,ylo,za), (xhi,ylo,zb), (xhi,ylo,za)),   # front y=ylo, +Y
                 ((xlo,yhi,za), (xhi,yhi,za), (xhi,yhi,zb)),   # back  y=yhi, −Y
-                ((xhi,yhi,za), (xhi,ylo,za), (xlo,ylo,za)),   # bottom z=za, +Z
+                ((xhi,ylo,za), (xhi,yhi,za), (xlo,yhi,za)),   # bottom z=za, +Z
                 ((xhi,yhi,zb), (xhi,yhi,za), (xhi,ylo,za)),   # end   x=xhi, −X
                 ((xhi,yhi,zb), (xhi,ylo,zb), (xlo,ylo,za)),   # slope
                 "ramp",
@@ -340,7 +341,7 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
             ramp5(
                 ((xlo,ylo,zb), (xlo,ylo,za), (xhi,ylo,za)),          # front y=ylo, +Y
                 ((xlo,yhi,zb), (xlo,yhi,za), (xlo,ylo,zb)),          # end   x=xlo, +X
-                ((xhi,yhi,bot),(xhi,ylo,bot),(xlo,ylo,bot)),          # virtual bottom, +Z
+                ((xhi,ylo,bot),(xhi,yhi,bot),(xlo,yhi,bot)),          # virtual bottom, +Z
                 ((xhi,ylo,zb), (xlo,ylo,za), (xlo,yhi,za)),          # slope
                 ((xlo,yhi,zb), (xhi,yhi,zb), (xhi,yhi,za)),          # back  y=yhi, −Y
                 "ramp",
@@ -348,7 +349,7 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
 
         # ── enclosure brushes for axis=='x' ramp ─────────────────────────────
         z_lo, z_hi = min(za, zb), max(za, zb)
-        ceil_top = z_hi + DOOR_H
+        ceil_top = z_hi + door_ht   # match door opening height
         # ceiling
         cb(xlo, ylo, ceil_top, xhi, yhi, ceil_top + H,
            nx=ceil_t, px=ceil_t, ny=ceil_t, py=ceil_t, nz=ceil_t, pz=ceil_t,
@@ -429,7 +430,7 @@ def _wallramp_brushes(room, bi):
 
 def corridor_brushes(ax,ay,az, bx,by,bz,
                      axis, floor_t, ceil_t, wall_t,
-                     door_hw=64,
+                     door_hw=64, door_ht=DOOR_H,
                      tag="", bi=0):
     """Build a corridor (flat) or ramp (when az != bz) between two rooms.
 
@@ -441,7 +442,7 @@ def corridor_brushes(ax,ay,az, bx,by,bz,
     if dz >= 32:
         return _ramp_brushes(ax, ay, az,
                              bx, by, bz,
-                             axis, door_hw,
+                             axis, door_hw, door_ht,
                              floor_t, ceil_t, wall_t,
                              tag=tag, bi=bi)
 
@@ -450,7 +451,7 @@ def corridor_brushes(ax,ay,az, bx,by,bz,
     hw  = door_hw
     parts = []
     zf = min(az, bz)
-    zc = zf + DOOR_H
+    zc = zf + door_ht   # ceiling matches door height
 
     def cb(ax1,ay1,az1, ax2,ay2,az2,
            nx=wall_t,px=wall_t,ny=wall_t,py=wall_t,nz=ceil_t,pz=floor_t, lbl=""):
@@ -529,6 +530,7 @@ class Bridge:
     ax:int; ay:int; az:int
     bx:int; by:int; bz:int
     door_hw: int = 64
+    door_ht: int = DOOR_H
     floor_t: str = "turnt/turnt_asphalt"
     wall_t:  str = "turnt/turnt_concrete"
     ceil_t:  str = "turnt/turnt_sky"
@@ -572,38 +574,22 @@ def _clip_footprint(x1, y1, x2, y2, clips):
 def _room_dims_from_physics(i: int, cfg: dict) -> Tuple[int, int, int, int, float]:
     """Return (room_len, room_cross, room_h, door_hw, u_i) for room index i.
 
-    A ±40% random size variance is applied so large rooms can appear early
-    and the route feels more organic / unpredictable.
+    Room dimensions are drawn uniformly from the cfg min/max sliders so that
+    Room Settings are the primary control.  Physics speed (u_i) is kept for
+    viewer colour-coding only.
     """
-    u_base   = cfg.get("u_base",    550.0)
-    u_gain   = cfg.get("u_gain",     60.0)
-    t_air    = cfg.get("t_air",      0.68)
-    strafe_f = cfg.get("strafe_f",   0.15)
+    u_base   = cfg.get("u_base",  550.0)
+    u_gain   = cfg.get("u_gain",   60.0)
+    u_i      = u_base + i * u_gain   # used for speed label in viewer
 
-    u_i = u_base + i * u_gain
+    min_w = cfg.get("min_w", 256);  max_w = cfg.get("max_w", 1536)
+    min_d = cfg.get("min_d", 192);  max_d = cfg.get("max_d", 512)
+    min_h = cfg.get("min_h", 192);  max_h = cfg.get("max_h", 512)
 
-    # random size multiplier — allows big rooms early, keeps small rooms late
-    size_var = random.uniform(0.6, 1.5)
-    h_var    = random.uniform(0.8, 1.6)
+    room_len   = _snap(random.uniform(min_w, max(min_w, max_w)))
+    room_cross = _snap(random.uniform(min_d, max(min_d, max_d)))
+    room_h     = _snap(random.uniform(min_h, max(min_h, max_h)))
 
-    raw_len = u_i * t_air * 1.15 * size_var
-    room_len = _snap(_clamp(raw_len,
-                            cfg.get("min_w", 256),
-                            cfg.get("max_w", 1536)))
-
-    raw_cross = u_i * strafe_f * size_var
-    room_cross = _snap(_clamp(raw_cross,
-                              cfg.get("min_d", 192),
-                              cfg.get("max_d", 512)))
-
-    jump_z = (u_i * 0.42) ** 2 / (2 * 800)
-    raw_h  = (jump_z + 128) * h_var
-    room_h = _snap(_clamp(raw_h,
-                          cfg.get("min_h", 192),
-                          cfg.get("max_h", 512)))
-
-    # door_hw = corridor_width_frac * room_cross / 2
-    # 0.5 → narrow (current default), 1.0 → full-width (rooms flow together)
     corr_frac = cfg.get("corridor_width_frac", 0.67)
     door_hw = _snap(_clamp(int(room_cross * corr_frac / 2), 32, room_cross // 2))
     return room_len, room_cross, room_h, door_hw, u_i
@@ -709,15 +695,9 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
                  door_hw=door_hw)
         rooms.append(r)
 
-        # --- gap: minimum 64 to avoid Z-fighting + guarantee ramp space ---
+        # --- gap: minimum 64 to avoid Z-fighting; ramps may extend into rooms ---
         reach = u_i * t_air
-        if i > 0 and cfg.get("height_var", True):
-            dz_abs = abs(cz - rooms[i-1].z1)
-            # Target ~15° slope (ratio 3.7:1) — shallow enough for crouchslide
-            min_ramp_gap = max(64, _snap(int(dz_abs * 3.7) + 32, 64))
-        else:
-            min_ramp_gap = 64
-        gap   = max(_snap(random.uniform(0.0, reach * 0.35)), min_ramp_gap)
+        gap   = max(64, _snap(random.uniform(0.0, reach * 0.25)))
 
         # --- advance cursor ---
         if layout in ("Random", "Spiral", "Multilevel"):
@@ -1010,16 +990,24 @@ def generate_map(cfg: dict):
             door_ht = max_ht  # full-height opening
         else:
             door_ht = _snap(random.randint(DOOR_H, max(DOOR_H, max_ht)), 32)
+        br.door_ht = door_ht   # store for corridor ceiling height
         if br.axis == 'x':
+            # Determine which wall based on actual bridge endpoint X coordinates
+            ra = rooms[br.room_a]; rb = rooms[br.room_b]
+            ra_wall = 'wx2' if br.ax >= ra.x2 - 1 else 'wx1'
+            rb_wall = 'wx1' if br.bx <= rb.x1 + 1 else 'wx2'
             room_doors[br.room_a].append(
-                {'wall':'wx2','center':br.ay,'hw':hw,'ht':door_ht,'z_bot':br.az})
+                {'wall':ra_wall,'center':br.ay,'hw':hw,'ht':door_ht,'z_bot':br.az})
             room_doors[br.room_b].append(
-                {'wall':'wx1','center':br.ay,'hw':hw,'ht':door_ht,'z_bot':br.bz})
+                {'wall':rb_wall,'center':br.ay,'hw':hw,'ht':door_ht,'z_bot':br.bz})
         else:
+            ra = rooms[br.room_a]; rb = rooms[br.room_b]
+            ra_wall = 'wy2' if br.ay >= ra.y2 - 1 else 'wy1'
+            rb_wall = 'wy1' if br.by <= rb.y1 + 1 else 'wy2'
             room_doors[br.room_a].append(
-                {'wall':'wy2','center':br.ax,'hw':hw,'ht':door_ht,'z_bot':br.az})
+                {'wall':ra_wall,'center':br.ax,'hw':hw,'ht':door_ht,'z_bot':br.az})
             room_doors[br.room_b].append(
-                {'wall':'wy1','center':br.ax,'hw':hw,'ht':door_ht,'z_bot':br.bz})
+                {'wall':rb_wall,'center':br.ax,'hw':hw,'ht':door_ht,'z_bot':br.bz})
 
     # ── Compute clip regions: for each room, collect footprints of later rooms
     #    that overlap it in XY.  Later rooms "win" — older geometry is clipped.
@@ -1096,7 +1084,7 @@ def generate_map(cfg: dict):
             br.ax, br.ay, br.az,
             br.bx, br.by, br.bz,
             br.axis, br.floor_t, br.ceil_t, br.wall_t,
-            door_hw=br.door_hw,
+            door_hw=br.door_hw, door_ht=br.door_ht,
             tag=f"br{br.room_a}_{br.room_b}", bi=bi)
         lines.extend(parts)
 
@@ -1108,23 +1096,27 @@ def generate_map(cfg: dict):
     last  = rooms[-1]
 
     # --- spawn — place at entry edge of first room, minimal prerun distance
+    # Determine exit wall from room_doors[0], spawn on opposite side facing exit.
     SL = 8   # slab thickness
-    if first.travel_axis == 'x':
-        spawn_x = first.x1 + 32
-        spawn_y = first.cy()
-        # start timer slab right after spawn (8 unit gap = no prerun)
-        sx1 = first.x1 + 40;  sx2 = first.x1 + 40 + SL
-        sy1 = first.y1;         sy2 = first.y2
-    else:
-        spawn_x = first.cx()
-        spawn_y = first.y1 + 32
-        sx1 = first.x1;         sx2 = first.x2
-        sy1 = first.y1 + 40;   sy2 = first.y1 + 40 + SL
+    first_doors = room_doors.get(0, [])
+    exit_wall = first_doors[0]['wall'] if first_doors else 'wx2'
+    if exit_wall == 'wx2':     # exit right → spawn near left wall, face East
+        spawn_x = first.x1 + 32; spawn_y = first.cy(); spawn_angle = "0"
+        sx1 = first.x1 + 64;  sx2 = sx1 + SL; sy1 = first.y1; sy2 = first.y2
+    elif exit_wall == 'wx1':   # exit left → spawn near right wall, face West
+        spawn_x = first.x2 - 32; spawn_y = first.cy(); spawn_angle = "180"
+        sx1 = first.x2 - 64 - SL; sx2 = sx1 + SL; sy1 = first.y1; sy2 = first.y2
+    elif exit_wall == 'wy2':   # exit top → spawn near bottom wall, face North
+        spawn_x = first.cx(); spawn_y = first.y1 + 32; spawn_angle = "90"
+        sx1 = first.x1; sx2 = first.x2; sy1 = first.y1 + 64; sy2 = sy1 + SL
+    else:                       # wy1: exit bottom → spawn near top wall, face South
+        spawn_x = first.cx(); spawn_y = first.y2 - 32; spawn_angle = "270"
+        sx1 = first.x1; sx2 = first.x2; sy1 = first.y2 - 64 - SL; sy2 = sy1 + SL
     spawn_z = first.z1 + 32
     lines.append(f"\n// entity {ei}")
     lines.append(ent_kv(classname="info_player_start",
                         origin=f"{spawn_x} {spawn_y} {spawn_z}",
-                        angle="0"))
+                        angle=spawn_angle))
     ei += 1
 
     # --- trigger_startTimer — thin line slab perpendicular to travel axis.
@@ -2413,12 +2405,17 @@ class App(tk.Tk):
         room_exits: Dict[int, list] = {}   # room_idx → [(wall, center, hw), …]
         for br in bridges:
             hw = br.door_hw
+            ra = rooms[br.room_a]; rb = rooms[br.room_b]
             if br.axis == 'x':
-                room_exits.setdefault(br.room_a, []).append(('wx2', br.ay, hw))
-                room_exits.setdefault(br.room_b, []).append(('wx1', br.ay, hw))
+                ra_wall = 'wx2' if br.ax >= ra.x2 - 1 else 'wx1'
+                rb_wall = 'wx1' if br.bx <= rb.x1 + 1 else 'wx2'
+                room_exits.setdefault(br.room_a, []).append((ra_wall, br.ay, hw))
+                room_exits.setdefault(br.room_b, []).append((rb_wall, br.ay, hw))
             else:
-                room_exits.setdefault(br.room_a, []).append(('wy2', br.ax, hw))
-                room_exits.setdefault(br.room_b, []).append(('wy1', br.ax, hw))
+                ra_wall = 'wy2' if br.ay >= ra.y2 - 1 else 'wy1'
+                rb_wall = 'wy1' if br.by <= rb.y1 + 1 else 'wy2'
+                room_exits.setdefault(br.room_a, []).append((ra_wall, br.ax, hw))
+                room_exits.setdefault(br.room_b, []).append((rb_wall, br.ax, hw))
 
         # ── Bridges ──────────────────────────────────────────────────────────
         for br in bridges:
@@ -2495,14 +2492,12 @@ class App(tk.Tk):
             AW = max(2, int(min(pw, ph) * 0.05))
 
             for wall_name, center, hw in exits:
-                # Classify: exits (room_a) get solid arrows; entries get dashed
-                # We determine by whether this room is the source (room_a) in any bridge
+                # Classify: exits are walls where a lower-indexed room connects out
                 is_exit = any(
-                    (br.room_a == i and br.axis == 'x' and wall_name == 'wx2') or
-                    (br.room_a == i and br.axis == 'y' and wall_name == 'wy2') or
-                    (br.room_b == i and br.axis == 'x' and wall_name == 'wx1') or
-                    (br.room_b == i and br.axis == 'y' and wall_name == 'wy1')
+                    br.room_a == i
                     for br in bridges
+                    if (br.axis == 'x' and br.ay == center and wall_name in ('wx1','wx2')) or
+                       (br.axis == 'y' and br.ax == center and wall_name in ('wy1','wy2'))
                 )
                 arrow_col = "#ffdd33" if is_exit else "#66aacc"
                 a_w = AW if is_exit else max(1, AW-1)
