@@ -151,8 +151,16 @@ def room_ceiling(x1,y1,z1, x2,y2,z2, ceil_t, tag, bi, clips=()):
     return parts, bi
 
 
-def room_walls(x1,y1,z1, x2,y2,z2, wall_t, tag, bi, doors=None, skip_sides=None):
-    """4 side walls with door cutouts.  Sides listed in skip_sides are omitted."""
+def room_walls(x1,y1,z1, x2,y2,z2, wall_t, tag, bi, doors=None, skip_sides=None,
+               side_clips=None):
+    """4 side walls with optional door cutouts and partial overlap clipping.
+
+    side_clips: {wall_name: [(clo, chi), ...]}
+        Intervals along the wall's variable axis (Y for wx1/wx2, X for wy1/wy2)
+        that are covered by overlapping rooms and should not be generated.
+        Walls are split into segments around these intervals rather than
+        being omitted entirely.
+    """
     H   = WALL_T
     ox1,oy1,oz1 = x1-H, y1-H, z1-H
     ox2,oy2,oz2 = x2+H, y2+H, z2+H
@@ -172,43 +180,70 @@ def room_walls(x1,y1,z1, x2,y2,z2, wall_t, tag, bi, doors=None, skip_sides=None)
         parts.append(write_brush(fs, f"brush {bi} {tag}_{lbl}"))
         bi += 1
 
-    def wall_y(bx1, bx2, by1, by2, bz1, bz2, wall_name):
-        """Wall panel along Y axis — cut door openings."""
+    def _gen_wall_y(bx1, bx2, by1, by2, bz1, bz2, wall_name):
+        """One Y-extent segment of a wx1/wx2 wall, with door cutout."""
         ds = door_map.get(wall_name)
         if not ds:
             rb(bx1, by1, bz1, bx2, by2, bz2, lbl=wall_name)
             return
         d = ds[0]
         yc = d['center'];  hw = d['hw']
+        eff_lo = max(yc - hw, by1)
+        eff_hi = min(yc + hw, by2)
+        if eff_lo >= eff_hi:          # door doesn't touch this segment
+            rb(bx1, by1, bz1, bx2, by2, bz2, lbl=wall_name)
+            return
         z_b = d['z_bot'];  z_t = min(z_b + d['ht'], bz2)
         if z_b > bz1:
-            rb(bx1, by1, bz1, bx2, by2, z_b,    lbl=f"{wall_name}_bot")
+            rb(bx1, by1,    bz1, bx2, by2,    z_b, lbl=f"{wall_name}_bot")
         if z_t < bz2:
-            rb(bx1, by1, z_t, bx2, by2, bz2,    lbl=f"{wall_name}_top")
-        if yc - hw > by1:
-            rb(bx1, by1,   z_b, bx2, yc-hw, z_t, lbl=f"{wall_name}_l")
-        if yc + hw < by2:
-            rb(bx1, yc+hw, z_b, bx2, by2,   z_t, lbl=f"{wall_name}_r")
+            rb(bx1, by1,    z_t, bx2, by2,    bz2, lbl=f"{wall_name}_top")
+        if eff_lo > by1:
+            rb(bx1, by1,    z_b, bx2, eff_lo, z_t, lbl=f"{wall_name}_l")
+        if eff_hi < by2:
+            rb(bx1, eff_hi, z_b, bx2, by2,    z_t, lbl=f"{wall_name}_r")
 
-    def wall_x(bx1, bx2, by1, by2, bz1, bz2, wall_name):
-        """Wall panel along X axis — cut door openings."""
+    def _gen_wall_x(bx1, bx2, by1, by2, bz1, bz2, wall_name):
+        """One X-extent segment of a wy1/wy2 wall, with door cutout."""
         ds = door_map.get(wall_name)
         if not ds:
             rb(bx1, by1, bz1, bx2, by2, bz2, lbl=wall_name)
             return
         d = ds[0]
         xc = d['center'];  hw = d['hw']
+        eff_lo = max(xc - hw, bx1)
+        eff_hi = min(xc + hw, bx2)
+        if eff_lo >= eff_hi:          # door doesn't touch this segment
+            rb(bx1, by1, bz1, bx2, by2, bz2, lbl=wall_name)
+            return
         z_b = d['z_bot'];  z_t = min(z_b + d['ht'], bz2)
         if z_b > bz1:
-            rb(bx1, by1, bz1, bx2, by2, z_b,     lbl=f"{wall_name}_bot")
+            rb(bx1,    by1, bz1, bx2,    by2, z_b, lbl=f"{wall_name}_bot")
         if z_t < bz2:
-            rb(bx1, by1, z_t, bx2, by2, bz2,     lbl=f"{wall_name}_top")
-        if xc - hw > bx1:
-            rb(bx1,   by1, z_b, xc-hw, by2, z_t, lbl=f"{wall_name}_l")
-        if xc + hw < bx2:
-            rb(xc+hw, by1, z_b, bx2,   by2, z_t, lbl=f"{wall_name}_r")
+            rb(bx1,    by1, z_t, bx2,    by2, bz2, lbl=f"{wall_name}_top")
+        if eff_lo > bx1:
+            rb(bx1,    by1, z_b, eff_lo, by2, z_t, lbl=f"{wall_name}_l")
+        if eff_hi < bx2:
+            rb(eff_hi, by1, z_b, bx2,    by2, z_t, lbl=f"{wall_name}_r")
 
-    # Generate the 4 walls; skip any that are interior to an overlapping room.
+    def wall_y(bx1, bx2, full_y1, full_y2, bz1, bz2, wall_name):
+        """wx1/wx2 wall — generate only the Y segments not covered by clips."""
+        clips_1d = (side_clips or {}).get(wall_name, [])
+        for seg_y1, seg_y2 in _clip_intervals(full_y1, full_y2, clips_1d):
+            _gen_wall_y(bx1, bx2, seg_y1, seg_y2, bz1, bz2, wall_name)
+
+    def wall_x(bx1, bx2, by1, by2, bz1, bz2, wall_name):
+        """wy1/wy2 wall — generate only the X segments not covered by clips.
+        Clips are in inner-face X space (x1..x2); outer slab (ox1/ox2)
+        is preserved at the original wall boundaries.
+        """
+        clips_1d = (side_clips or {}).get(wall_name, [])
+        for seg_x1, seg_x2 in _clip_intervals(x1, x2, clips_1d):
+            sbx1 = bx1 if seg_x1 <= x1 else seg_x1
+            sbx2 = bx2 if seg_x2 >= x2 else seg_x2
+            _gen_wall_x(sbx1, sbx2, by1, by2, bz1, bz2, wall_name)
+
+    # Generate the 4 walls; skip any that are entirely inside an overlapping room.
     skip = skip_sides or set()
     if 'wx1' not in skip:
         wall_y(ox1, x1,  y1, y2, oz1, oz2, 'wx1')   # left  wall (x-min side)
@@ -584,6 +619,25 @@ def _clamp(v, lo, hi):
 def _xy_overlap(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2) -> bool:
     return ax1 < bx2 and ax2 > bx1 and ay1 < by2 and ay2 > by1
 
+def _clip_intervals(lo: int, hi: int, clips) -> list:
+    """Subtract list of (clo, chi) intervals from [lo, hi]. Returns remaining segments."""
+    segs = [(lo, hi)]
+    for clo, chi in clips:
+        new_segs = []
+        for a, b in segs:
+            ov_lo = max(a, clo)
+            ov_hi = min(b, chi)
+            if ov_lo >= ov_hi:
+                new_segs.append((a, b))
+            else:
+                if a < ov_lo:
+                    new_segs.append((a, ov_lo))
+                if ov_hi < b:
+                    new_segs.append((ov_hi, b))
+        segs = new_segs
+    return segs
+
+
 def _subtract_rect(rx1, ry1, rx2, ry2, ox1, oy1, ox2, oy2):
     """Subtract obstacle from rect. Returns up to 4 surrounding pieces."""
     cx1 = max(rx1, ox1); cy1 = max(ry1, oy1)
@@ -690,7 +744,25 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
     seg_turn_at   = rpt   # Snake randomises this per segment
 
     for i in range(n):
+        # --- Detect corner room: turn will happen after this room ---
+        if layout == "Linear":
+            is_corner_room = False
+        elif layout == "Snake":
+            is_corner_room = (rooms_in_seg + 1 >= seg_turn_at)
+        else:
+            is_corner_room = (rooms_in_seg + 1 >= rpt)
+
         room_len, room_cross, room_h, door_hw, u_i = _room_dims_from_physics(i, cfg)
+
+        # Widen corner rooms — VQ3 crouchslide needs space to turn
+        if is_corner_room and i > 0:
+            corner_scale = random.uniform(1.3, 1.6)
+            max_w = cfg.get("max_w", 1536)
+            max_d = cfg.get("max_d", 512)
+            room_len   = _snap(min(int(room_len   * corner_scale), max_w))
+            room_cross = _snap(min(int(room_cross * corner_scale), max_d))
+            corr_frac  = cfg.get("corridor_width_frac", 0.67)
+            door_hw    = _snap(_clamp(int(room_cross * corr_frac / 2), 32, room_cross // 2))
 
         if layout in ("Random", "Spiral", "Multilevel"):
             # heading determines which room dimension is "long" vs "cross"
@@ -710,19 +782,28 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
         # --- Z variation ---
         if i > 0 and cfg.get("height_var", True):
             prev_h = rooms[i-1].h
-            if layout == "Multilevel":
-                # Large steps for multilevel — use previous room height as scale
-                max_step = max(128, int(prev_h * 0.75))
-                max_step = _snap(max_step, 64)
-                dz_choices = [0, max_step//2, max_step, -max_step//2, -max_step,
-                               max_step//4, -max_step//4, 0, 0]
+            # No consecutive height changes — prevents double-step runs
+            prev_had_dz = (i >= 2 and rooms[i-1].z1 != rooms[i-2].z1)
+            if prev_had_dz:
+                dz = 0
             else:
-                # Up to 50% of previous room height per step
-                max_step = max(64, int(prev_h * 0.5))
-                max_step = _snap(max_step, 32)
-                half    = max_step // 2
-                dz_choices = [0, 0, half, max_step, -half, -max_step]
-            cz += random.choice(dz_choices)
+                if layout == "Multilevel":
+                    # Large steps for multilevel — use previous room height as scale
+                    max_step = max(128, int(prev_h * 0.75))
+                    max_step = _snap(max_step, 64)
+                    dz_choices = [0, max_step//2, max_step, -max_step//2, -max_step,
+                                   max_step//4, -max_step//4, 0, 0]
+                else:
+                    # Up to 50% of previous room height per step
+                    max_step = max(64, int(prev_h * 0.5))
+                    max_step = _snap(max_step, 32)
+                    half    = max_step // 2
+                    dz_choices = [0, 0, half, max_step, -half, -max_step]
+                dz = random.choice(dz_choices)
+                # Second room (i==1) can only go down from the first, not up
+                if i == 1:
+                    dz = min(dz, 0)
+            cz += dz
             cz  = _snap(cz, 32)
             # Clamp so floor doesn't exceed previous room's ceiling minus DOOR_H
             prev_ceil = rooms[i-1].z1 + rooms[i-1].h
@@ -731,6 +812,38 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
                 cz = max(cz, 0)
             else:
                 cz = max(cz, -2048)
+
+        # --- Z collision avoidance for folding layouts ---
+        # When Random/Spiral/Multilevel routes double back, push the new room
+        # above or below rooms it ACTUALLY conflicts with in 3D.
+        # Exclude rooms[i-1]: it's the room we're bridging from, so XY overlap
+        # near the shared wall is expected and the ramp handles height.
+        if layout in ("Random", "Spiral", "Multilevel") and i > 0:
+            CLEARANCE = 64
+            prev_room = rooms[i - 1]
+            # Find rooms that overlap in XY AND in Z with the candidate placement
+            real_conflicts = [
+                r for r in rooms
+                if r is not prev_room
+                and _xy_overlap(cx, cy, cx + w, cy + d, r.x1, r.y1, r.x2, r.y2)
+                and r.z1 < cz + room_h + CLEARANCE
+                and cz < r.z1 + r.h + CLEARANCE
+            ]
+            if real_conflicts:
+                # Push by only as much as needed to clear the conflicting rooms
+                ov_z_ceil  = max(r.z1 + r.h for r in real_conflicts)
+                ov_z_floor = min(r.z1       for r in real_conflicts)
+                z_above = _snap(ov_z_ceil  + CLEARANCE, 32)
+                z_below = _snap(ov_z_floor - room_h - CLEARANCE, 32)
+                # Stay as close to prev_room.z1 as possible so ramps can reach
+                if abs(z_above - prev_room.z1) <= abs(z_below - prev_room.z1):
+                    cz = z_above
+                else:
+                    cz = z_below
+                if layout != "Multilevel":
+                    cz = max(cz, 0)
+                else:
+                    cz = max(cz, -2048)
 
         _ft, _wt, _ct = _zone_tex(i // ZONE_SIZE)
         r = Room(x=cx, y=cy, z=cz,
@@ -1065,14 +1178,16 @@ def generate_map(cfg: dict):
                 {'wall':rb_wall,'center':br.ax,'hw':hw,'ht':door_ht_hi,'z_bot':br.bz})
 
     # ── Compute clip regions: for each room, collect footprints of later rooms
-    #    that overlap it in XY.  Later rooms "win" — older geometry is clipped.
+    #    that overlap it in both XY AND Z.  Rooms at different height levels
+    #    (e.g. Multilevel/Spiral passing above) must NOT clip each other.
     room_clips: Dict[int, list] = {i: [] for i in range(len(rooms))}
     for i in range(len(rooms)):
         ri = rooms[i]
         for j in range(i + 1, len(rooms)):
             rj = rooms[j]
-            if _xy_overlap(ri.x1, ri.y1, ri.x2, ri.y2,
-                           rj.x1, rj.y1, rj.x2, rj.y2):
+            z_overlap = ri.z1 < rj.z2 and rj.z1 < ri.z2
+            if z_overlap and _xy_overlap(ri.x1, ri.y1, ri.x2, ri.y2,
+                                         rj.x1, rj.y1, rj.x2, rj.y2):
                 room_clips[i].append((rj.x1, rj.y1, rj.x2, rj.y2))
 
     lines = [
@@ -1106,20 +1221,50 @@ def generate_map(cfg: dict):
         ) if clips else False
 
         if not contained:
-            # Determine which wall sides are buried inside a later room's interior
-            skip_sides: set = set()
+            # Compute per-side clip intervals: only the portions of each wall
+            # surface that are inside a later room's XY footprint are removed.
+            # This preserves the rest of the wall ("broken box") instead of
+            # discarding the entire side.
+            side_clips: Dict[str, list] = {}
             for cx1,cy1,cx2,cy2 in clips:
-                y_ov = cy1 < room.y2 and cy2 > room.y1
-                x_ov = cx1 < room.x2 and cx2 > room.x1
-                if cx1 < room.x1 < cx2 and y_ov:  skip_sides.add('wx1')
-                if cx1 < room.x2 < cx2 and y_ov:  skip_sides.add('wx2')
-                if cy1 < room.y1 < cy2 and x_ov:  skip_sides.add('wy1')
-                if cy1 < room.y2 < cy2 and x_ov:  skip_sides.add('wy2')
+                if cx1 < room.x1 < cx2:
+                    ylo = max(room.y1, cy1); yhi = min(room.y2, cy2)
+                    if ylo < yhi:
+                        side_clips.setdefault('wx1', []).append((ylo, yhi))
+                if cx1 < room.x2 < cx2:
+                    ylo = max(room.y1, cy1); yhi = min(room.y2, cy2)
+                    if ylo < yhi:
+                        side_clips.setdefault('wx2', []).append((ylo, yhi))
+                if cy1 < room.y1 < cy2:
+                    xlo = max(room.x1, cx1); xhi = min(room.x2, cx2)
+                    if xlo < xhi:
+                        side_clips.setdefault('wy1', []).append((xlo, xhi))
+                if cy1 < room.y2 < cy2:
+                    xlo = max(room.x1, cx1); xhi = min(room.x2, cx2)
+                    if xlo < xhi:
+                        side_clips.setdefault('wy2', []).append((xlo, xhi))
+
+            # Never clip a wall segment that contains a door opening —
+            # the player must always be able to pass through the bridge.
+            for door in room_doors.get(room.idx, []):
+                w_name = door['wall']
+                if w_name not in side_clips:
+                    continue
+                # Door spans [center-hw, center+hw] along the wall's variable axis
+                dlo = door['center'] - door['hw']
+                dhi = door['center'] + door['hw']
+                preserved = []
+                for clo, chi in side_clips[w_name]:
+                    if clo < dlo:
+                        preserved.append((clo, min(chi, dlo)))
+                    if chi > dhi:
+                        preserved.append((max(clo, dhi), chi))
+                side_clips[w_name] = preserved
 
             parts, bi = room_walls(room.x1,room.y1,room.z1, room.x2,room.y2,room.z2,
                                    room.wall_t, f"r{room.idx}", bi,
                                    doors=room_doors.get(room.idx),
-                                   skip_sides=skip_sides)
+                                   side_clips=side_clips)
             lines.extend(parts)
             # Wall-ramp wedges disabled — only directional ramps generated
             # if random.random() < 0.4:
@@ -2530,9 +2675,12 @@ class App(tk.Tk):
             elif i == n - 1:
                 fill, bdr = T["end_col"], T["accent"]
             else:
-                # Blue-cyan gradient by speed, brightened by Z height
-                t_s = (room.speed_in - 550) / max(1, 60 * n)
-                t_s = max(0.0, min(1.0, t_s))
+                # Blue-cyan gradient — by speed when physics enabled, flat otherwise
+                if self._v_use_physics.get():
+                    t_s = (room.speed_in - 550) / max(1, 60 * n)
+                    t_s = max(0.0, min(1.0, t_s))
+                else:
+                    t_s = 0.0
                 t_z = (room.z1 - z_min) / z_range
                 r_c = max(0, min(255, int(0x1e + t_s*(0x18-0x1e))))
                 g_c = max(0, min(255, int(0x3a + t_s*(0x70-0x3a) + t_z*0x35)))
@@ -2567,12 +2715,13 @@ class App(tk.Tk):
                           font=("Consolas", max(6, fs-2)),
                           anchor="ne")
 
-            # ── Speed — bottom-left ────────────────────────────────────────
-            c.create_text(ls + 4, bs - 3,
-                          text=f"{room.speed_in:.0f}u",
-                          fill=T["accent2"],
-                          font=("Segoe UI", max(6, fs-2), "bold"),
-                          anchor="sw")
+            # ── Speed — bottom-left (only when physics model is active) ───
+            if self._v_use_physics.get():
+                c.create_text(ls + 4, bs - 3,
+                              text=f"{room.speed_in:.0f}u",
+                              fill=T["accent2"],
+                              font=("Segoe UI", max(6, fs-2), "bold"),
+                              anchor="sw")
 
             # ── Exit / entry arrows on door walls ─────────────────────────
             exits = room_exits.get(i, [])
