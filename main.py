@@ -181,50 +181,79 @@ def room_walls(x1,y1,z1, x2,y2,z2, wall_t, tag, bi, doors=None, skip_sides=None,
         bi += 1
 
     def _gen_wall_y(bx1, bx2, by1, by2, bz1, bz2, wall_name):
-        """One Y-extent segment of a wx1/wx2 wall, with door cutout."""
+        """wx1/wx2 wall segment — carve out all door openings sorted by Y.
+
+        Supports multiple doors on the same wall face (normal bridge door +
+        passthrough doors from bridges that cross through this room).
+        """
         ds = door_map.get(wall_name)
         if not ds:
             rb(bx1, by1, bz1, bx2, by2, bz2, lbl=wall_name)
             return
-        d = ds[0]
-        yc = d['center'];  hw = d['hw']
-        eff_lo = max(yc - hw, by1)
-        eff_hi = min(yc + hw, by2)
-        if eff_lo >= eff_hi:          # door doesn't touch this segment
+        # Sort doors by Y center so we can walk left→right
+        sorted_ds = sorted(ds, key=lambda d: d['center'])
+        cur_y = by1   # left frontier
+        any_door = False
+        for d in sorted_ds:
+            yc = d['center'];  hw = d['hw']
+            eff_lo = max(yc - hw, by1)
+            eff_hi = min(yc + hw, by2)
+            if eff_lo >= eff_hi:          # door outside this Y segment
+                continue
+            any_door = True
+            z_b = d['z_bot'];  z_t = min(z_b + d['ht'], bz2)
+            # Solid strip to the left of this opening
+            if cur_y < eff_lo:
+                rb(bx1, cur_y,   bz1, bx2, eff_lo, bz2, lbl=f"{wall_name}_s")
+            # Below-door piece
+            if z_b > bz1:
+                rb(bx1, eff_lo, bz1, bx2, eff_hi, z_b, lbl=f"{wall_name}_bot")
+            # Above-door piece
+            if z_t < bz2:
+                rb(bx1, eff_lo, z_t, bx2, eff_hi, bz2, lbl=f"{wall_name}_top")
+            cur_y = max(cur_y, eff_hi)
+        if not any_door:
             rb(bx1, by1, bz1, bx2, by2, bz2, lbl=wall_name)
             return
-        z_b = d['z_bot'];  z_t = min(z_b + d['ht'], bz2)
-        if z_b > bz1:
-            rb(bx1, by1,    bz1, bx2, by2,    z_b, lbl=f"{wall_name}_bot")
-        if z_t < bz2:
-            rb(bx1, by1,    z_t, bx2, by2,    bz2, lbl=f"{wall_name}_top")
-        if eff_lo > by1:
-            rb(bx1, by1,    z_b, bx2, eff_lo, z_t, lbl=f"{wall_name}_l")
-        if eff_hi < by2:
-            rb(bx1, eff_hi, z_b, bx2, by2,    z_t, lbl=f"{wall_name}_r")
+        # Remaining solid strip to the right of the last opening
+        if cur_y < by2:
+            rb(bx1, cur_y, bz1, bx2, by2, bz2, lbl=f"{wall_name}_s")
 
     def _gen_wall_x(bx1, bx2, by1, by2, bz1, bz2, wall_name):
-        """One X-extent segment of a wy1/wy2 wall, with door cutout."""
+        """wy1/wy2 wall segment — carve out all door openings sorted by X.
+
+        Supports multiple doors on the same wall face.
+        """
         ds = door_map.get(wall_name)
         if not ds:
             rb(bx1, by1, bz1, bx2, by2, bz2, lbl=wall_name)
             return
-        d = ds[0]
-        xc = d['center'];  hw = d['hw']
-        eff_lo = max(xc - hw, bx1)
-        eff_hi = min(xc + hw, bx2)
-        if eff_lo >= eff_hi:          # door doesn't touch this segment
+        sorted_ds = sorted(ds, key=lambda d: d['center'])
+        cur_x = bx1
+        any_door = False
+        for d in sorted_ds:
+            xc = d['center'];  hw = d['hw']
+            eff_lo = max(xc - hw, bx1)
+            eff_hi = min(xc + hw, bx2)
+            if eff_lo >= eff_hi:
+                continue
+            any_door = True
+            z_b = d['z_bot'];  z_t = min(z_b + d['ht'], bz2)
+            # Solid strip to the left of this opening
+            if cur_x < eff_lo:
+                rb(cur_x,   by1, bz1, eff_lo, by2, bz2, lbl=f"{wall_name}_s")
+            # Below-door piece
+            if z_b > bz1:
+                rb(eff_lo, by1, bz1, eff_hi, by2, z_b, lbl=f"{wall_name}_bot")
+            # Above-door piece
+            if z_t < bz2:
+                rb(eff_lo, by1, z_t, eff_hi, by2, bz2, lbl=f"{wall_name}_top")
+            cur_x = max(cur_x, eff_hi)
+        if not any_door:
             rb(bx1, by1, bz1, bx2, by2, bz2, lbl=wall_name)
             return
-        z_b = d['z_bot'];  z_t = min(z_b + d['ht'], bz2)
-        if z_b > bz1:
-            rb(bx1,    by1, bz1, bx2,    by2, z_b, lbl=f"{wall_name}_bot")
-        if z_t < bz2:
-            rb(bx1,    by1, z_t, bx2,    by2, bz2, lbl=f"{wall_name}_top")
-        if eff_lo > bx1:
-            rb(bx1,    by1, z_b, eff_lo, by2, z_t, lbl=f"{wall_name}_l")
-        if eff_hi < bx2:
-            rb(eff_hi, by1, z_b, bx2,    by2, z_t, lbl=f"{wall_name}_r")
+        if cur_x < bx2:
+            rb(cur_x, by1, bz1, bx2, by2, bz2, lbl=f"{wall_name}_s")
 
     def wall_y(bx1, bx2, full_y1, full_y2, bz1, bz2, wall_name):
         """wx1/wx2 wall — generate only the Y segments not covered by clips."""
@@ -243,16 +272,19 @@ def room_walls(x1,y1,z1, x2,y2,z2, wall_t, tag, bi, doors=None, skip_sides=None,
             sbx2 = bx2 if seg_x2 >= x2 else seg_x2
             _gen_wall_x(sbx1, sbx2, by1, by2, bz1, bz2, wall_name)
 
-    # Generate the 4 walls; skip any that are entirely inside an overlapping room.
+    # Generate the 4 walls.
+    # Z range: oz1 (z1-H) downward into floor thickness, z2 (NOT oz2=z2+H) so the
+    # wall never protrudes above the room's own ceiling into adjacent rooms above.
+    # The ceiling brush handles the top H-thick slab separately.
     skip = skip_sides or set()
     if 'wx1' not in skip:
-        wall_y(ox1, x1,  y1, y2, oz1, oz2, 'wx1')   # left  wall (x-min side)
+        wall_y(ox1, x1,  y1, y2, oz1, z2, 'wx1')   # left  wall (x-min side)
     if 'wx2' not in skip:
-        wall_y(x2,  ox2, y1, y2, oz1, oz2, 'wx2')   # right wall (x-max side)
+        wall_y(x2,  ox2, y1, y2, oz1, z2, 'wx2')   # right wall (x-max side)
     if 'wy1' not in skip:
-        wall_x(ox1, ox2, oy1, y1, oz1, oz2, 'wy1')  # front wall (y-min side)
+        wall_x(ox1, ox2, oy1, y1, oz1, z2, 'wy1')  # front wall (y-min side)
     if 'wy2' not in skip:
-        wall_x(ox1, ox2, y2,  oy2, oz1, oz2, 'wy2') # back  wall (y-max side)
+        wall_x(ox1, ox2, y2,  oy2, oz1, z2, 'wy2') # back  wall (y-max side)
 
     return parts, bi
 
@@ -450,7 +482,23 @@ def _wallramp_brushes(room, bi):
     return parts, bi
 
 
-SLOPE_RATIO = 4.0   # horizontal / vertical ≈ 14° — shallow enough for crouchslide
+SLOPE_RATIO    = 4.0   # horizontal / vertical ≈ 14° — ideal shallow slope
+MAX_RAMP_ANGLE = 30    # degrees — steepest allowed ramp
+# Minimum slope ratio that keeps angle ≤ MAX_RAMP_ANGLE: 1/tan(30°) ≈ 1.732
+MIN_SLOPE_RATIO = 1.0 / math.tan(math.radians(MAX_RAMP_ANGLE))
+
+
+def _adaptive_ramp_len(dz: int, max_available: int) -> int:
+    """Choose ramp length given height difference and available space.
+
+    Prefers the ideal shallow slope (SLOPE_RATIO).  If space is tight the angle
+    steepens up to MAX_RAMP_ANGLE degrees.  Never shorter than the bare minimum.
+    """
+    ideal     = int(dz * SLOPE_RATIO)
+    min_len   = int(math.ceil(dz * MIN_SLOPE_RATIO))
+    if max_available <= 0:
+        return max(min_len, abs(dz))
+    return max(min(ideal, max_available), min_len)
 
 
 def corridor_brushes(ax,ay,az, bx,by,bz,
@@ -479,17 +527,19 @@ def corridor_brushes(ax,ay,az, bx,by,bz,
         hi_far = rb_far if ax <= bx else ra_far
 
         if axis == 'x':
-            ramp_len = max(int(dz * SLOPE_RATIO), hi_x - lo_x)
             if lo_z <= hi_z:          # upramp: extends into lo-side room
+                # Determine room geometry first, then pick angle
                 x_hi = hi_x - H
-                x_lo = x_hi - ramp_len
-                if lo_far is not None:
-                    x_lo = max(x_lo, lo_far + H)
+                x_lo_limit = (lo_far + H) if lo_far is not None else (x_hi - int(dz * SLOPE_RATIO))
+                max_available = x_hi - x_lo_limit
+                ramp_len = _adaptive_ramp_len(dz, max_available)
+                x_lo = max(x_hi - ramp_len, x_lo_limit)
             else:                     # downramp: extends into hi-side room
                 x_lo = lo_x + H
-                x_hi = x_lo + ramp_len
-                if hi_far is not None:
-                    x_hi = min(x_hi, hi_far - H)
+                x_hi_limit = (hi_far - H) if hi_far is not None else (x_lo + int(dz * SLOPE_RATIO))
+                max_available = x_hi_limit - x_lo
+                ramp_len = _adaptive_ramp_len(dz, max_available)
+                x_hi = min(x_lo + ramp_len, x_hi_limit)
             return _ramp_brushes(x_lo, ay, lo_z, x_hi, by, hi_z,
                                  axis, door_hw, door_ht,
                                  floor_t, ceil_t, wall_t,
@@ -501,17 +551,18 @@ def corridor_brushes(ax,ay,az, bx,by,bz,
             hi_zy = bz if ay <= by else az
             lo_fy = ra_far if ay <= by else rb_far
             hi_fy = rb_far if ay <= by else ra_far
-            ramp_len = max(int(dz * SLOPE_RATIO), hi_y - lo_y)
             if lo_zy <= hi_zy:        # upramp: extends into lo-side room
                 y_hi = hi_y - H
-                y_lo = y_hi - ramp_len
-                if lo_fy is not None:
-                    y_lo = max(y_lo, lo_fy + H)
+                y_lo_limit = (lo_fy + H) if lo_fy is not None else (y_hi - int(dz * SLOPE_RATIO))
+                max_available = y_hi - y_lo_limit
+                ramp_len = _adaptive_ramp_len(dz, max_available)
+                y_lo = max(y_hi - ramp_len, y_lo_limit)
             else:                     # downramp: extends into hi-side room
                 y_lo = lo_y + H
-                y_hi = y_lo + ramp_len
-                if hi_fy is not None:
-                    y_hi = min(y_hi, hi_fy - H)
+                y_hi_limit = (hi_fy - H) if hi_fy is not None else (y_lo + int(dz * SLOPE_RATIO))
+                max_available = y_hi_limit - y_lo
+                ramp_len = _adaptive_ramp_len(dz, max_available)
+                y_hi = min(y_lo + ramp_len, y_hi_limit)
             return _ramp_brushes(ax, y_lo, lo_zy, bx, y_hi, hi_zy,
                                  axis, door_hw, door_ht,
                                  floor_t, ceil_t, wall_t,
@@ -742,6 +793,7 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
     axis = 'x'
     rooms_in_seg  = 0
     seg_turn_at   = rpt   # Snake randomises this per segment
+    prev_was_corner = False   # True when previous room was marked as corner
 
     for i in range(n):
         # --- Detect corner room: turn will happen after this room ---
@@ -780,25 +832,27 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
                 w, d = room_cross, room_len
 
         # --- Z variation ---
+        # Height steps happen ONLY on the room immediately after a corner room.
+        # This keeps ramps short and co-located with the turn, avoiding long
+        # ramps that block the straight path segments.
         if i > 0 and cfg.get("height_var", True):
             prev_h = rooms[i-1].h
-            # No consecutive height changes — prevents double-step runs
-            prev_had_dz = (i >= 2 and rooms[i-1].z1 != rooms[i-2].z1)
-            if prev_had_dz:
+            if not prev_was_corner:
+                # Not after a corner — stay flat
                 dz = 0
             else:
                 if layout == "Multilevel":
                     # Large steps for multilevel — use previous room height as scale
                     max_step = max(128, int(prev_h * 0.75))
                     max_step = _snap(max_step, 64)
-                    dz_choices = [0, max_step//2, max_step, -max_step//2, -max_step,
-                                   max_step//4, -max_step//4, 0, 0]
+                    dz_choices = [max_step//2, max_step, -max_step//2, -max_step,
+                                   max_step//4, -max_step//4]
                 else:
                     # Up to 50% of previous room height per step
                     max_step = max(64, int(prev_h * 0.5))
                     max_step = _snap(max_step, 32)
                     half    = max_step // 2
-                    dz_choices = [0, 0, half, max_step, -half, -max_step]
+                    dz_choices = [half, max_step, -half, -max_step]
                 dz = random.choice(dz_choices)
                 # Second room (i==1) can only go down from the first, not up
                 if i == 1:
@@ -870,6 +924,9 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
                 cx += w + gap
             else:
                 cy += d + gap
+
+        # Record whether this room is a corner for the NEXT iteration's Z logic
+        prev_was_corner = is_corner_room
 
         # --- decide turn ---
         rooms_in_seg += 1
@@ -994,11 +1051,14 @@ def _try_bridge(i: int, j: int, rooms: List['Room']) -> Optional['Bridge']:
     return None
 
 
-def build_bridges(rooms: List['Room']) -> List['Bridge']:
+def build_bridges(rooms: List['Room']):
     """Build sequential bridges plus optional shortcut bridges (multi-route).
 
     Shortcuts connect rooms i → i+2 or i → i+3 when they are spatially close,
     creating parallel paths the player can discover.
+
+    Returns (bridges, all_pairs) where all_pairs includes containment pairs
+    (rooms that share space without needing a corridor brush).
     """
     bridges: List[Bridge] = []
     paired: set = set()
@@ -1009,6 +1069,13 @@ def build_bridges(rooms: List['Room']) -> List['Bridge']:
         if br is not None:
             bridges.append(br)
             paired.add((i, i + 1))
+        else:
+            # Rooms may overlap in XY (containment / shared space).
+            # No corridor brush is needed — _compute_wall_clips will create
+            # the natural opening.  Mark as connected so Pass 5 BFS works.
+            a, b = rooms[i], rooms[i + 1]
+            if _xy_overlap(a.x1, a.y1, a.x2, a.y2, b.x1, b.y1, b.x2, b.y2):
+                paired.add((i, i + 1))
 
     # Shortcut bridges (multi-route): skip 1–2 rooms if geographically close
     for i in range(len(rooms)):
@@ -1028,7 +1095,7 @@ def build_bridges(rooms: List['Room']) -> List['Bridge']:
                     paired.add((i, j))
                     break   # one shortcut per room is enough
 
-    return bridges
+    return bridges, paired
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ENTITIES
@@ -1087,13 +1154,167 @@ def align_room_ceilings(rooms: List['Room'], bridges: List['Bridge']):
         room.h = _snap(ceil_z[i]) - room.z1
 
 
+def _add_passthrough_doors(rooms, bridges, room_doors):
+    """Punch door openings through any room wall that a bridge's corridor crosses.
+
+    Core problem: if room B is fully inside room A, the bridge B→C travels from
+    inside A, through A's wall, into C.  A's wall has no cutout for this crossing
+    → solid wall blocks the path.
+
+    For every bridge we scan all *other* rooms.  If the bridge's travel segment
+    crosses one of their wall faces (strictly between the two bridge endpoints in
+    the bridge axis, with Y/X overlap within the door width), we add a door-cutout
+    entry so room_walls() will carve the opening.
+
+    Also handles partial-overlap cases where a bridge exits one room diagonally
+    into space and re-enters another room.
+    """
+    for br in bridges:
+        z_bot = min(br.az, br.bz)
+        ht    = br.door_ht
+        hw    = br.door_hw
+
+        if br.axis == 'x':
+            x_lo = min(br.ax, br.bx)
+            x_hi = max(br.ax, br.bx)
+            yc   = br.ay
+            for r in rooms:
+                if r.idx in (br.room_a, br.room_b):
+                    continue
+                # Z overlap: bridge opening must reach this room's interior
+                if not (z_bot < r.z2 and z_bot + ht > r.z1):
+                    continue
+                # wx2: right wall at x=r.x2 is strictly inside the bridge X span
+                if x_lo < r.x2 < x_hi and yc - hw < r.y2 and yc + hw > r.y1:
+                    room_doors[r.idx].append(
+                        {'wall': 'wx2', 'center': yc, 'hw': hw,
+                         'ht': ht, 'z_bot': z_bot})
+                # wx1: left wall at x=r.x1 is strictly inside the bridge X span
+                if x_lo < r.x1 < x_hi and yc - hw < r.y2 and yc + hw > r.y1:
+                    room_doors[r.idx].append(
+                        {'wall': 'wx1', 'center': yc, 'hw': hw,
+                         'ht': ht, 'z_bot': z_bot})
+        else:  # axis == 'y'
+            y_lo = min(br.ay, br.by)
+            y_hi = max(br.ay, br.by)
+            xc   = br.ax
+            for r in rooms:
+                if r.idx in (br.room_a, br.room_b):
+                    continue
+                if not (z_bot < r.z2 and z_bot + ht > r.z1):
+                    continue
+                # wy2: back wall at y=r.y2 strictly inside the bridge Y span
+                if y_lo < r.y2 < y_hi and xc - hw < r.x2 and xc + hw > r.x1:
+                    room_doors[r.idx].append(
+                        {'wall': 'wy2', 'center': xc, 'hw': hw,
+                         'ht': ht, 'z_bot': z_bot})
+                # wy1: front wall at y=r.y1 strictly inside the bridge Y span
+                if y_lo < r.y1 < y_hi and xc - hw < r.x2 and xc + hw > r.x1:
+                    room_doors[r.idx].append(
+                        {'wall': 'wy1', 'center': xc, 'hw': hw,
+                         'ht': ht, 'z_bot': z_bot})
+
+
+def _compute_footprint_clips(room, all_rooms, face_z):
+    """Return a list of (xlo, ylo, xhi, yhi) rects to subtract from room's XY footprint.
+
+    A region is clipped when the horizontal face at *face_z* (floor or ceiling) is
+    STRICTLY inside another room's Z range — i.e. that other room "swallows" this
+    face.  Matches the C# CheckRoomOverlap logic: a border block inside another
+    room's bounding box is skipped.
+
+    Used for:
+      floor   (face_z = room.z1) — prevents room B's floor brush from creating a
+              solid platform inside room A when room A contains z1_B in its Z span.
+      ceiling (face_z = room.z2) — prevents ceiling brush from creating a solid
+              sheet inside taller adjacent rooms.
+    """
+    clips = []
+    for j in all_rooms:
+        if j is room:
+            continue
+        # face_z must be strictly inside j's Z interior
+        if not (j.z1 < face_z < j.z2):
+            continue
+        xlo = max(room.x1, j.x1); xhi = min(room.x2, j.x2)
+        ylo = max(room.y1, j.y1); yhi = min(room.y2, j.y2)
+        if xlo < xhi and ylo < yhi:
+            clips.append((xlo, ylo, xhi, yhi))
+    return clips
+
+
+def _compute_wall_clips(room, all_rooms, doors):
+    """C# CheckRoomOverlap approach for brush walls.
+
+    For each of the four wall faces of *room*, find intervals along that face
+    that are STRICTLY inside another room's 3D volume, and collect them as
+    side_clips.  Strict inequalities mean touching walls (gap=0) are NOT
+    clipped — door openings handle those.  Door spans are preserved explicitly.
+
+    Returns a side_clips dict compatible with room_walls():
+      { 'wx1': [(ylo,yhi),...], 'wx2': [...],
+        'wy1': [(xlo,xhi),...], 'wy2': [...] }
+    """
+    clips: Dict[str, list] = {}
+
+    for j in all_rooms:
+        if j is room:
+            continue
+        # Z must overlap (open intervals — strict)
+        if not (j.z1 < room.z2 and j.z2 > room.z1):
+            continue
+
+        # wx1 face at x=room.x1: strictly inside j if j.x1 < room.x1 < j.x2
+        if j.x1 < room.x1 < j.x2:
+            ylo = max(room.y1, j.y1); yhi = min(room.y2, j.y2)
+            if ylo < yhi:
+                clips.setdefault('wx1', []).append((ylo, yhi))
+
+        # wx2 face at x=room.x2
+        if j.x1 < room.x2 < j.x2:
+            ylo = max(room.y1, j.y1); yhi = min(room.y2, j.y2)
+            if ylo < yhi:
+                clips.setdefault('wx2', []).append((ylo, yhi))
+
+        # wy1 face at y=room.y1
+        if j.y1 < room.y1 < j.y2:
+            xlo = max(room.x1, j.x1); xhi = min(room.x2, j.x2)
+            if xlo < xhi:
+                clips.setdefault('wy1', []).append((xlo, xhi))
+
+        # wy2 face at y=room.y2
+        if j.y1 < room.y2 < j.y2:
+            xlo = max(room.x1, j.x1); xhi = min(room.x2, j.x2)
+            if xlo < xhi:
+                clips.setdefault('wy2', []).append((xlo, xhi))
+
+    # Preserve door openings — remove clip intervals that overlap door spans
+    for door in doors:
+        w_name = door['wall']
+        if w_name not in clips:
+            continue
+        center = door['center']
+        hw     = door['hw']
+        dlo, dhi = center - hw, center + hw
+        kept = []
+        for clo, chi in clips[w_name]:
+            if chi <= dlo or clo >= dhi:        # no overlap with door
+                kept.append((clo, chi))
+            else:                               # overlaps door → keep parts outside
+                if clo < dlo: kept.append((clo, dlo))
+                if chi > dhi: kept.append((dhi, chi))
+        clips[w_name] = kept
+
+    return clips
+
+
 def generate_map(cfg: dict):
     seed = cfg.get("seed")
     if seed is not None:
         random.seed(seed)
 
-    rooms   = place_rooms(cfg["n_rooms"], cfg)
-    bridges = build_bridges(rooms)
+    rooms             = place_rooms(cfg["n_rooms"], cfg)
+    bridges, all_pairs = build_bridges(rooms)
 
     # ── Center map so bounding box midpoint is at (0, 0) and min-Z = 0 ────────
     if rooms:
@@ -1177,18 +1398,10 @@ def generate_map(cfg: dict):
             room_doors[br.room_b].append(
                 {'wall':rb_wall,'center':br.ax,'hw':hw,'ht':door_ht_hi,'z_bot':br.bz})
 
-    # ── Compute clip regions: for each room, collect footprints of later rooms
-    #    that overlap it in both XY AND Z.  Rooms at different height levels
-    #    (e.g. Multilevel/Spiral passing above) must NOT clip each other.
-    room_clips: Dict[int, list] = {i: [] for i in range(len(rooms))}
-    for i in range(len(rooms)):
-        ri = rooms[i]
-        for j in range(i + 1, len(rooms)):
-            rj = rooms[j]
-            z_overlap = ri.z1 < rj.z2 and rj.z1 < ri.z2
-            if z_overlap and _xy_overlap(ri.x1, ri.y1, ri.x2, ri.y2,
-                                         rj.x1, rj.y1, rj.x2, rj.y2):
-                room_clips[i].append((rj.x1, rj.y1, rj.x2, rj.y2))
+    # Punch passthrough openings in any room walls that bridge corridors cross.
+    # Required for the containment case: if room B is inside room A, the bridge
+    # B→C exits through A's wall — A needs a door cutout or the wall blocks it.
+    _add_passthrough_doors(rooms, bridges, room_doors)
 
     lines = [
         "// Game: Quake 3",
@@ -1205,77 +1418,37 @@ def generate_map(cfg: dict):
     bi = 0
 
     # ── Pass 1: floors ────────────────────────────────────────────────────────
+    # C# approach: skip floor regions whose face (z=z1) is strictly inside
+    # another room's Z volume.  This prevents room B's floor brush from creating
+    # an opaque solid platform inside room A when B's z1 falls within A's Z range.
     for room in rooms:
-        clips = room_clips[room.idx]
+        fc = _compute_footprint_clips(room, rooms, room.z1)
         parts, bi = room_floor(room.x1,room.y1,room.z1, room.x2,room.y2,room.z2,
-                               room.floor_t, f"r{room.idx}", bi, clips=clips)
+                               room.floor_t, f"r{room.idx}", bi, clips=fc)
         lines.extend(parts)
 
     # ── Pass 2: walls ─────────────────────────────────────────────────────────
+    # C# approach: skip wall segments that fall strictly inside another room's
+    # 3D volume.  Touching walls (gap=0) are NOT clipped (boundary is strict) —
+    # door openings handle those.  Contained rooms get all walls clipped away,
+    # creating natural openings without any explicit door geometry.
+    # Wall Z is capped at z2 (not z2+H) so it never protrudes into rooms above.
     for room in rooms:
-        clips = room_clips[room.idx]
-        # Fully contained: all clip rects together cover the whole room footprint
-        contained = any(
-            cx1 <= room.x1 and room.x2 <= cx2 and cy1 <= room.y1 and room.y2 <= cy2
-            for cx1,cy1,cx2,cy2 in clips
-        ) if clips else False
-
-        if not contained:
-            # Compute per-side clip intervals: only the portions of each wall
-            # surface that are inside a later room's XY footprint are removed.
-            # This preserves the rest of the wall ("broken box") instead of
-            # discarding the entire side.
-            side_clips: Dict[str, list] = {}
-            for cx1,cy1,cx2,cy2 in clips:
-                if cx1 < room.x1 < cx2:
-                    ylo = max(room.y1, cy1); yhi = min(room.y2, cy2)
-                    if ylo < yhi:
-                        side_clips.setdefault('wx1', []).append((ylo, yhi))
-                if cx1 < room.x2 < cx2:
-                    ylo = max(room.y1, cy1); yhi = min(room.y2, cy2)
-                    if ylo < yhi:
-                        side_clips.setdefault('wx2', []).append((ylo, yhi))
-                if cy1 < room.y1 < cy2:
-                    xlo = max(room.x1, cx1); xhi = min(room.x2, cx2)
-                    if xlo < xhi:
-                        side_clips.setdefault('wy1', []).append((xlo, xhi))
-                if cy1 < room.y2 < cy2:
-                    xlo = max(room.x1, cx1); xhi = min(room.x2, cx2)
-                    if xlo < xhi:
-                        side_clips.setdefault('wy2', []).append((xlo, xhi))
-
-            # Never clip a wall segment that contains a door opening —
-            # the player must always be able to pass through the bridge.
-            for door in room_doors.get(room.idx, []):
-                w_name = door['wall']
-                if w_name not in side_clips:
-                    continue
-                # Door spans [center-hw, center+hw] along the wall's variable axis
-                dlo = door['center'] - door['hw']
-                dhi = door['center'] + door['hw']
-                preserved = []
-                for clo, chi in side_clips[w_name]:
-                    if clo < dlo:
-                        preserved.append((clo, min(chi, dlo)))
-                    if chi > dhi:
-                        preserved.append((max(clo, dhi), chi))
-                side_clips[w_name] = preserved
-
-            parts, bi = room_walls(room.x1,room.y1,room.z1, room.x2,room.y2,room.z2,
-                                   room.wall_t, f"r{room.idx}", bi,
-                                   doors=room_doors.get(room.idx),
-                                   side_clips=side_clips)
-            lines.extend(parts)
-            # Wall-ramp wedges disabled — only directional ramps generated
-            # if random.random() < 0.4:
-            #     wr_parts, bi = _wallramp_brushes(room, bi)
-            #     lines.extend(wr_parts)
+        sc = _compute_wall_clips(room, rooms, room_doors.get(room.idx, []))
+        parts, bi = room_walls(room.x1,room.y1,room.z1, room.x2,room.y2,room.z2,
+                               room.wall_t, f"r{room.idx}", bi,
+                               doors=room_doors.get(room.idx),
+                               side_clips=sc)
+        lines.extend(parts)
 
     # ── Pass 3: ceilings ──────────────────────────────────────────────────────
+    # C# approach: skip ceiling regions whose face (z=z2) is strictly inside
+    # another room's Z volume — prevents ceiling brush from creating a solid
+    # sheet inside taller adjacent rooms.
     for room in rooms:
-        clips = room_clips[room.idx]
+        cc = _compute_footprint_clips(room, rooms, room.z2)
         parts, bi = room_ceiling(room.x1,room.y1,room.z1, room.x2,room.y2,room.z2,
-                                 room.ceil_t, f"r{room.idx}", bi, clips=clips)
+                                 room.ceil_t, f"r{room.idx}", bi, clips=cc)
         lines.extend(parts)
 
     # ── Pass 4: corridors / ramps ─────────────────────────────────────────────
@@ -1298,6 +1471,95 @@ def generate_map(cfg: dict):
         lines.extend(parts)
 
     lines.append("}")  # end worldspawn
+
+    # ── Pass 5: Connectivity check (BFS from room 0) ──────────────────────────
+    warnings: List[str] = []
+    if rooms:
+        adj: Dict[int, set] = {i: set() for i in range(len(rooms))}
+        for br in bridges:
+            adj[br.room_a].add(br.room_b)
+            adj[br.room_b].add(br.room_a)
+        for (i, j) in all_pairs:        # includes containment / shared-space pairs
+            adj[i].add(j); adj[j].add(i)
+        visited: set = {0}
+        queue:   list = [0]
+        while queue:
+            cur = queue.pop()
+            for nb in adj[cur]:
+                if nb not in visited:
+                    visited.add(nb); queue.append(nb)
+        unreachable = [i for i in range(len(rooms)) if i not in visited]
+        if unreachable:
+            msg = f"⚠ {len(unreachable)} unreachable room(s): {unreachable}"
+            lines.append(f"// {msg}")
+            warnings.append(msg)
+
+    # ── Pass 6: Ramp validation ───────────────────────────────────────────────
+    # NOTE: br.ax/bx store room-wall coordinates (the gap), NOT the ramp extent.
+    # corridor_brushes() extends the ramp INTO adjacent rooms via _adaptive_ramp_len.
+    # We replicate that logic here to measure the actual ramp angle.
+    for br in bridges:
+        dz = abs(br.bz - br.az)
+        if dz < 32:
+            continue
+        ra = rooms[br.room_a]; rb = rooms[br.room_b]
+        H = WALL_T
+        # Compute far-wall limits (same logic as Pass 4)
+        if br.axis == 'x':
+            ra_far = ra.x1 if br.ax >= ra.x2 - 1 else ra.x2
+            rb_far = rb.x2 if br.bx <= rb.x1 + 1 else rb.x1
+            lo_z = br.az if br.ax <= br.bx else br.bz
+            hi_z = br.bz if br.ax <= br.bx else br.az
+            lo_far = ra_far if br.ax <= br.bx else rb_far
+            hi_far = rb_far if br.ax <= br.bx else ra_far
+            hi_x = max(br.ax, br.bx)
+            lo_x = min(br.ax, br.bx)
+            if lo_z <= hi_z:   # upramp: extends into lo-side room
+                x_hi = hi_x - H
+                x_lo_limit = (lo_far + H) if lo_far is not None else (x_hi - int(dz * SLOPE_RATIO))
+                max_available = x_hi - x_lo_limit
+            else:              # downramp: extends into hi-side room
+                x_lo = lo_x + H
+                x_hi_limit = (hi_far - H) if hi_far is not None else (x_lo + int(dz * SLOPE_RATIO))
+                max_available = x_hi_limit - x_lo
+            ramp_len = _adaptive_ramp_len(dz, max_available)
+        else:  # axis == 'y'
+            ra_far = ra.y1 if br.ay >= ra.y2 - 1 else ra.y2
+            rb_far = rb.y2 if br.by <= rb.y1 + 1 else rb.y1
+            lo_zy = br.az if br.ay <= br.by else br.bz
+            hi_zy = br.bz if br.ay <= br.by else br.az
+            lo_fy = ra_far if br.ay <= br.by else rb_far
+            hi_fy = rb_far if br.ay <= br.by else ra_far
+            hi_y = max(br.ay, br.by)
+            lo_y = min(br.ay, br.by)
+            if lo_zy <= hi_zy:   # upramp
+                y_hi = hi_y - H
+                y_lo_limit = (lo_fy + H) if lo_fy is not None else (y_hi - int(dz * SLOPE_RATIO))
+                max_available = y_hi - y_lo_limit
+            else:                # downramp
+                y_lo = lo_y + H
+                y_hi_limit = (hi_fy - H) if hi_fy is not None else (y_lo + int(dz * SLOPE_RATIO))
+                max_available = y_hi_limit - y_lo
+            ramp_len = _adaptive_ramp_len(dz, max_available)
+        if ramp_len > 0:
+            angle = math.degrees(math.atan2(dz, ramp_len))
+            if angle > MAX_RAMP_ANGLE:
+                msg = (f"⚠ Ramp r{br.room_a}→r{br.room_b}: "
+                       f"angle {angle:.1f}° exceeds {MAX_RAMP_ANGLE}° "
+                       f"(dz={dz}, len={ramp_len}, avail={max_available})")
+                lines.append(f"// {msg}")
+                warnings.append(msg)
+        # Endpoint sanity: bridge start should lie within room_a's footprint
+        if br.axis == 'x' and not (ra.x1 - 1 <= br.ax <= ra.x2 + 1):
+            msg = (f"⚠ Ramp r{br.room_a}→r{br.room_b}: "
+                   f"ax={br.ax} outside room_a X [{ra.x1},{ra.x2}]")
+            lines.append(f"// {msg}")
+            warnings.append(msg)
+        elif br.axis == 'y' and not (ra.y1 - 1 <= br.ay <= ra.y2 + 1):
+            msg = (f"⚠ Ramp r{br.room_a}→r{br.room_b}: "
+                   f"ay={br.ay} outside room_a Y [{ra.y1},{ra.y2}]")
+            lines.append(f"// {msg}")
+            warnings.append(msg)
 
     # ── Entities ─────────────────────────────────────────────────────────────
     ei    = 1
@@ -1392,7 +1654,7 @@ def generate_map(cfg: dict):
                                 count=str(cp_n)))
             ei += 1
 
-    return "\n".join(lines), rooms, bridges
+    return "\n".join(lines), rooms, bridges, warnings
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  3D VIEWER
@@ -1705,7 +1967,7 @@ class App(tk.Tk):
         s.configure("Pd.TLabel",      background=bgp, foreground=dim)   # dim on panel
         s.configure("C.TLabel",       background=bgc, foreground=txt)
         s.configure("H1.TLabel",      background=bg,  foreground=acc, font=("Segoe UI", 22, "bold"))
-        s.configure("H2.TLabel",      background=bgp, foreground=acc, font=("Segoe UI", 10, "bold"))
+        s.configure("H2.TLabel",      background=bgp, foreground=acc, font=("Segoe UI", 9, "bold"))
         s.configure("H3.TLabel",      background=bgc, foreground=acc, font=("Segoe UI",  9, "bold"))
         s.configure("TNotebook",      background=bg,  borderwidth=0)
         s.configure("TNotebook.Tab",  background=bgp, foreground=dim, padding=[14, 7],  font=("Segoe UI", 9, "bold"))
@@ -1779,31 +2041,38 @@ class App(tk.Tk):
         self._v_rooms = tk.IntVar(value=10)
         self._slider(p, "Number of rooms", self._v_rooms, 2, 100)
 
-        # Seed row
+        # Seed row: [🎲 Auto toggle] [seed spinbox — always visible]
         sr = ttk.Frame(p, style="P.TFrame")
         sr.pack(fill="x", pady=(2, 4))
-        self._v_seed_lock = tk.BooleanVar(value=False)
-        ttk.Checkbutton(sr, text="Lock seed",
-                        variable=self._v_seed_lock,
-                        command=self._toggle_seed).pack(side="left")
+        self._v_autorand = tk.BooleanVar(value=True)
+        self._auto_btn = tk.Button(
+            sr, text="🎲 Auto",
+            bg=T["accent2"], fg=T["btn_fg"],
+            font=("Segoe UI", 8, "bold"),
+            relief="flat", cursor="hand2", padx=6, pady=2, bd=0,
+            activebackground=T["lbx_sel"],
+            command=self._toggle_autorand)
+        self._auto_btn.pack(side="left")
         self._v_seed = tk.IntVar(value=0)
         self._seed_spin = self._spinbox(sr, self._v_seed,
                                         0, 9_999_999, 1,
-                                        state="disabled", pack=False)
-        self._seed_spin.pack(side="left", padx=(8, 0))
+                                        state="readonly", pack=False)
+        self._seed_spin.pack(side="left", padx=(8, 0), fill="x", expand=True)
 
         # Action buttons
-        self._btn(p, "Generate map", self._on_generate,
+        self._btn(p, "⚡ Generate", self._on_generate,
                   color=T["accent"],
                   font=("Segoe UI", 11, "bold")).pack(fill="x", pady=(6, 4))
         r2 = ttk.Frame(p, style="P.TFrame")
         r2.pack(fill="x", pady=(0, 4))
-        self._btn(r2, "Save .map", self._on_save,
+        self._btn(r2, "💾 Save .map", self._on_save,
                   color=T["success"]).pack(side="left", fill="x",
                                            expand=True, padx=(0, 4))
-        self._btn(r2, "New seed", self._randomize_seed,
+        self._btn(r2, "📂", self._on_open_folder,
+                  color=T["accent2"], w=3).pack(side="left", padx=(0, 4))
+        self._btn(r2, "🎲 New seed", self._randomize_seed,
                   color=T["accent2"]).pack(side="left", fill="x", expand=True)
-        self._launch_btn = self._btn(p, "Launch map in game",
+        self._launch_btn = self._btn(p, "🚀 Launch in game",
                                      self._on_launch_game,
                                      color=T["warning"],
                                      font=("Segoe UI", 9, "bold"))
@@ -1811,22 +2080,9 @@ class App(tk.Tk):
 
         ttk.Separator(p, orient="horizontal").pack(fill="x", pady=(4, 0))
 
-        # ── Scrollable parameters area ────────────────────────────────────────
-        canvas = tk.Canvas(p, bg=T["bg_panel"], highlightthickness=0)
-        vsb    = ttk.Scrollbar(p, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-        inner = tk.Frame(canvas, bg=T["bg_panel"])
-        win   = canvas.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind("<Configure>",
-                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>",
-                    lambda e: canvas.itemconfig(win, width=e.width))
-        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-            canvas.bind(seq, lambda e, c=canvas: c.yview_scroll(
-                -1 if (e.delta > 0 or e.num == 4) else 1, "units"))
-        q = inner
+        # ── Parameters area (no scroll — all visible at once) ─────────────────
+        q = ttk.Frame(p, style="P.TFrame")
+        q.pack(fill="both", expand=True)
 
         # ── Room settings ─────────────────────────────────────────────────────
         self._sec(q, "Room settings")
@@ -1849,20 +2105,10 @@ class App(tk.Tk):
                  bg=T["bg_panel"], fg=T["text_dim"],
                  font=("Segoe UI", 7)).pack(anchor="w", pady=(0, 2))
 
-        # Min door height + corridor width in one row
-        dc = ttk.Frame(q, style="P.TFrame")
-        dc.pack(fill="x", pady=(0, 4))
-        dc.columnconfigure(0, weight=1)
-        dc.columnconfigure(1, weight=2)
-        df = ttk.Frame(dc, style="P.TFrame")
-        df.grid(row=0, column=0, padx=(0, 6), sticky="ew")
-        ttk.Label(df, text="Min door height (qu)", style="P.TLabel",
-                  font=("Segoe UI", 7)).pack(anchor="w")
-        self._v_door_h = tk.IntVar(value=128)
-        self._spinbox(df, self._v_door_h, 64, 512, 32)
-        cw_f = ttk.Frame(dc, style="P.TFrame")
-        cw_f.grid(row=0, column=1, sticky="ew")
-        ttk.Label(cw_f, text="Corridor width", style="P.TLabel",
+        # Corridor width
+        cw_row = ttk.Frame(q, style="P.TFrame")
+        cw_row.pack(fill="x", pady=(0, 4))
+        ttk.Label(cw_row, text="Corridor width", style="P.TLabel",
                   font=("Segoe UI", 7)).pack(anchor="w")
         self._v_corr_frac = tk.DoubleVar(value=0.67)
         cw_lbl_var = tk.StringVar(value="67%")
@@ -1870,7 +2116,7 @@ class App(tk.Tk):
             v = self._v_corr_frac.get()
             cw_lbl_var.set("100% (open)" if v >= 0.98 else f"{int(v*100)}%")
         self._v_corr_frac.trace_add("write", _update_cw_lbl)
-        cw_inner = ttk.Frame(cw_f, style="P.TFrame")
+        cw_inner = ttk.Frame(cw_row, style="P.TFrame")
         cw_inner.pack(fill="x")
         ttk.Scale(cw_inner, from_=0.25, to=1.0, variable=self._v_corr_frac,
                   orient="horizontal").pack(side="left", fill="x", expand=True)
@@ -1880,7 +2126,6 @@ class App(tk.Tk):
         # Checkboxes
         self._v_height = tk.BooleanVar(value=True)
         self._v_checks = tk.BooleanVar(value=True)
-        self._v_autorand = tk.BooleanVar(value=True)
         for text, var in [
             ("Height variation between rooms", self._v_height),
             ("Add trigger_checkpoint entities", self._v_checks),
@@ -2200,10 +2445,6 @@ class App(tk.Tk):
         # ── Game folder ───────────────────────────────────────────────────────
         _path_row(p, "Game executable", self._game_exe, self._browse_game_exe)
 
-        # ── Generation ────────────────────────────────────────────────────────
-        self._sec(p, "Generation")
-        ttk.Checkbutton(p, text="Auto-randomize seed after each generation",
-                        variable=self._v_autorand).pack(anchor="w", pady=2)
 
     # ── RIGHT PANEL ───────────────────────────────────────────────────────────
     def _build_right(self, p):
@@ -2366,7 +2607,7 @@ class App(tk.Tk):
 
     # ── UI helpers ────────────────────────────────────────────────────────────
     def _btn(self, parent, text, cmd,
-             color=None, font=None, w=None, pady=6):
+             color=None, font=None, w=None, pady=3):
         color = color or T["accent"]
         font  = font  or ("Segoe UI", 10, "bold")
         kw = dict(text=text, command=cmd,
@@ -2374,7 +2615,7 @@ class App(tk.Tk):
                   activebackground=color,
                   activeforeground=T["btn_fg"],
                   relief="flat", cursor="hand2",
-                  font=font, padx=12, pady=pady, bd=0)
+                  font=font, padx=8, pady=pady, bd=0)
         if w:
             kw["width"] = w
         b = tk.Button(parent, **kw)
@@ -2438,13 +2679,15 @@ class App(tk.Tk):
         for sb in self._phy_widgets:
             sb.config(state=st)
 
-    def _toggle_seed(self):
-        st = "normal" if self._v_seed_lock.get() else "disabled"
-        self._seed_spin.config(state=st)
+    def _toggle_autorand(self):
+        self._v_autorand.set(not self._v_autorand.get())
+        is_auto = self._v_autorand.get()
+        self._auto_btn.config(bg=T["accent2"] if is_auto else T["bg_card"])
+        self._seed_spin.config(state="readonly" if is_auto else "normal")
 
     def _randomize_seed(self, silent=False):
-        if self._v_seed_lock.get():
-            return  # don't override a locked seed
+        if not self._v_autorand.get():
+            return  # manual seed locked — user controls it
         s = random.randint(0, 9_999_999)
         self._v_seed.set(s)
         if not silent:
@@ -2498,8 +2741,6 @@ class App(tk.Tk):
         # ── Generation ────────────────────────────────────────────────────────────
     def _collect_cfg(self) -> dict:
         self._update_tex_lists()
-        global DOOR_H
-        DOOR_H = self._v_door_h.get()
         return {
             "n_rooms":      self._v_rooms.get(),
             # room size clamp limits
@@ -2519,7 +2760,7 @@ class App(tk.Tk):
             "rooms_per_turn": self._v_rpt.get(),
             "layout_style":   self._v_layout.get(),
             # misc
-            "seed":         self._v_seed.get() if self._v_seed_lock.get() else None,
+            "seed":         self._v_seed.get(),
             "map_name":     "turnt_map",
             "height_var":   self._v_height.get(),
             "checkpoints":  self._v_checks.get(),
@@ -2547,7 +2788,7 @@ class App(tk.Tk):
                     f"layout: {cfg['layout_style']} | seed {cfg['seed']}…",
                     "info")
                 t0 = time.perf_counter()
-                ms, rooms, bridges = generate_map(cfg)
+                ms, rooms, bridges, gen_warnings = generate_map(cfg)
                 dt = time.perf_counter() - t0
 
                 self._map_str = ms
@@ -2560,6 +2801,8 @@ class App(tk.Tk):
                     f"Done in {dt:.2f}s — {len(rooms)} rooms, "
                     f"{len(bridges)} bridges, ~{nb} brushes, {kb:.1f} KB",
                     "info")
+                for w in gen_warnings:
+                    self._log(w, "warn")
                 self._lbl_stats.config(
                     text=f"rooms={len(rooms)}  bridges={len(bridges)}"
                          f"  brushes≈{nb}  {kb:.1f} KB")
@@ -2581,6 +2824,16 @@ class App(tk.Tk):
             self._log("Nothing to save — generate first.", "warn")
             return
         self._do_save(manual=True)
+
+    def _on_open_folder(self):
+        folder = os.path.dirname(os.path.abspath(self._out_path.get()))
+        try:
+            if os.name == 'nt':
+                os.startfile(folder)
+            else:
+                subprocess.run(['xdg-open', folder])
+        except Exception as ex:
+            self._log(f"Cannot open folder: {ex}", "error")
 
     def _do_save(self, manual=False):
         path = self._out_path.get()
