@@ -2027,13 +2027,16 @@ class App(tk.Tk):
         t1 = ttk.Frame(nb, style="P.TFrame", padding=8)
         t2 = ttk.Frame(nb, style="P.TFrame", padding=8)
         t3 = ttk.Frame(nb, style="P.TFrame", padding=8)
+        t4 = ttk.Frame(nb, style="P.TFrame", padding=8)
         nb.add(t1, text="  Generate  ")
         nb.add(t2, text="  Textures  ")
         nb.add(t3, text="  Settings  ")
+        nb.add(t4, text="  DBT Import  ")
 
         self._tab_generate(t1)
         self._tab_textures(t2)
         self._tab_settings(t3)
+        self._tab_dbt_import(t4)
 
         # ─ Tab: Generate ───────────────────────────────────────────────────
     def _tab_generate(self, p):
@@ -2445,6 +2448,606 @@ class App(tk.Tk):
         # ── Game folder ───────────────────────────────────────────────────────
         _path_row(p, "Game executable", self._game_exe, self._browse_game_exe)
 
+
+    # ─ Tab: DBT Import ─────────────────────────────────────────────────────
+    def _tab_dbt_import(self, p):
+        # ── File picker ──────────────────────────────────────────────────────
+        self._sec(p, "Source .rbe file")
+        file_row = ttk.Frame(p, style="P.TFrame")
+        file_row.pack(fill="x", pady=(0, 8))
+        self._v_rbe_path = tk.StringVar(value="")
+        ttk.Entry(file_row, textvariable=self._v_rbe_path,
+                  font=("Consolas", 8)).pack(side="left", fill="x", expand=True)
+
+        def _browse_rbe():
+            path_ = filedialog.askopenfilename(
+                title="Open Diabotical map",
+                filetypes=[("Diabotical Map", "*.rbe"), ("All files", "*.*")])
+            if path_:
+                self._v_rbe_path.set(path_)
+
+        self._btn(file_row, "…", _browse_rbe, w=4,
+                  color=T["accent2"]).pack(side="left", padx=(6, 0))
+
+        # ── Scale ────────────────────────────────────────────────────────────
+        self._sec(p, "Scale (Quake units per block)")
+        sc_row = ttk.Frame(p, style="P.TFrame")
+        sc_row.pack(fill="x", pady=(0, 8))
+        # dbt X→Q X (48), dbt Z→Q Y (48), dbt Y→Q Z (42)
+        self._v_rbe_sx = tk.IntVar(value=48)
+        self._v_rbe_sy = tk.IntVar(value=48)
+        self._v_rbe_sz = tk.IntVar(value=42)
+        for lbl, var in [("X:", self._v_rbe_sx),
+                          ("Y:", self._v_rbe_sy),
+                          ("Z (height):", self._v_rbe_sz)]:
+            ttk.Label(sc_row, text=lbl, style="P.TLabel").pack(side="left")
+            self._spinbox(sc_row, var, 1, 512, 1, pack=False).pack(
+                side="left", padx=(2, 12))
+
+        # ── Block type filter ────────────────────────────────────────────────
+        self._sec(p, "Include block types")
+        self._v_rbe_solid = tk.BooleanVar(value=True)
+        self._v_rbe_clip  = tk.BooleanVar(value=False)
+        types_row = ttk.Frame(p, style="P.TFrame")
+        types_row.pack(fill="x", pady=(0, 8))
+        for text, var in [("Solid (type 1)", self._v_rbe_solid),
+                           ("Corner (type 3)", self._v_rbe_clip)]:
+            tk.Checkbutton(types_row, text=text, variable=var,
+                           bg=T["bg_panel"], fg=T["text"],
+                           selectcolor=T["bg_input"],
+                           activebackground=T["bg_panel"]).pack(
+                side="left", padx=(0, 16))
+
+        # ── Actions ──────────────────────────────────────────────────────────
+        self._sec(p, "Actions")
+        act_row = ttk.Frame(p, style="P.TFrame")
+        act_row.pack(fill="x", pady=(0, 8))
+        self._btn(act_row, "Import & Convert",
+                  self._on_import_rbe).pack(side="left", padx=(0, 8))
+        self._btn(act_row, "Save .map", self._on_rbe_save,
+                  color=T["accent2"]).pack(side="left")
+
+        # ── Status log ───────────────────────────────────────────────────────
+        self._sec(p, "Status")
+        self._rbe_log = scrolledtext.ScrolledText(
+            p, height=8, state="disabled",
+            bg=T["bg_input"], fg=T["text"],
+            font=("Consolas", 8), relief="flat",
+            insertbackground=T["text"], wrap="word")
+        self._rbe_log.pack(fill="both", expand=True, pady=(0, 4))
+        self._rbe_log.tag_config("info",  foreground=T["success"])
+        self._rbe_log.tag_config("warn",  foreground=T["warning"])
+        self._rbe_log.tag_config("error", foreground=T["accent"])
+
+    def _rbe_log_write(self, msg, level="plain"):
+        self._rbe_log.config(state="normal")
+        pfx = {"info": "[OK] ", "warn": "[!!] ", "error": "[ERR] "}.get(level, "")
+        self._rbe_log.insert("end", pfx + msg + "\n", level)
+        self._rbe_log.see("end")
+        self._rbe_log.config(state="disabled")
+
+    # ─ RBE parsing ─────────────────────────────────────────────────────────
+    @staticmethod
+    def _parse_rbe(filepath):
+        """Parse a Diabotical .rbe map file.
+
+        Returns (blocks, materials, entities, ver) where:
+          blocks   — list of dicts: x,y,z (grid ints), type (uint8), mats dict, orient
+          materials— list of strings, index 0 is "default"
+          entities — list of dicts: name, x,y,z (floats), properties list
+          ver      — format version int
+        """
+        import struct, gzip as gz
+
+        def ri(f, n=4):
+            return int.from_bytes(f.read(n), "little", signed=True)
+
+        def rf(f):
+            return struct.unpack('<f', f.read(4))[0]
+
+        with open(filepath, 'rb') as raw:
+            raw.read(4)          # magic 'REBM'
+            ver      = ri(raw)
+            ri(raw)              # u1
+            ri(raw)              # padding1
+
+            if ver > 21:
+                author_len = ri(raw)
+                raw.read(author_len)   # author name
+                raw.read(8)            # padding2
+                f = gz.GzipFile(fileobj=raw)
+            else:
+                f = raw
+
+            mat_count = ri(f, 1)
+            materials = ["default"]
+            for _ in range(mat_count - 1):
+                c = ri(f, 4)
+                materials.append(f.read(c).decode("utf-8"))
+
+            ri(f, 4)  # u2
+            block_count = ri(f, 4)
+            blocks = []
+            for _ in range(block_count):
+                b = {
+                    "x":    ri(f, 4),
+                    "y":    ri(f, 4),
+                    "z":    ri(f, 4),
+                    "type": ri(f, 1),
+                }
+                f.read(12)  # u1 (unknown)
+                b["mats"] = {
+                    "front":  ri(f, 1),
+                    "left":   ri(f, 1),
+                    "back":   ri(f, 1),
+                    "right":  ri(f, 1),
+                    "top":    ri(f, 1),
+                    "bottom": ri(f, 1),
+                }
+                f.read(1)   # u2
+                f.read(12)  # mat_offs (sprite sheet offsets, unused here)
+                if ver > 24:
+                    f.read(6)
+                    b["orient"] = ri(f, 1)
+                    f.read(2)
+                else:
+                    b["orient"] = ri(f, 1)
+                    f.read(1)
+                blocks.append(b)
+
+            # skip u3 section
+            u3_count = ri(f, 4)
+            for _ in range(u3_count):
+                f.read(16)
+
+            entity_count = ri(f, 4)
+            entities = []
+            for _ in range(entity_count):
+                c = ri(f, 4)
+                e = {
+                    "name":   f.read(c).decode("utf-8"),
+                    "x":      rf(f), "y": rf(f), "z": rf(f),
+                    "xrot":   rf(f), "yrot": rf(f), "zrot": rf(f),
+                    "xscale": rf(f), "yscale": rf(f), "zscale": rf(f),
+                }
+                prop_count = ri(f, 4)
+                e["properties"] = []
+                for _ in range(prop_count):
+                    c = ri(f, 4)
+                    name = f.read(c).decode("utf-8")
+                    c = ri(f, 4)
+                    val = f.read(c).decode("utf-8")
+                    e["properties"].append({"name": name, "val": val})
+                entities.append(e)
+
+        return blocks, materials, entities, ver
+
+    # ─ Greedy merge ────────────────────────────────────────────────────────
+    @staticmethod
+    def _greedy_merge(blocks):
+        """Merge adjacent blocks into axis-aligned boxes (greedy meshing).
+
+        Coordinate note: in Diabotical, Y is up. Blocks are on integer grid.
+        Returns list of (x1,y1,z1, x2,y2,z2) where each value is exclusive-max
+        in dbt grid coords (so a single block at pos P has x2=P.x+1 etc.).
+        """
+        bset = {(b["x"], b["y"], b["z"]) for b in blocks}
+        visited = set()
+        merged = []
+
+        for (bx, by, bz) in sorted(bset):
+            if (bx, by, bz) in visited:
+                continue
+
+            # Expand along X (dbt X → Quake X)
+            x2 = bx
+            while (x2 + 1, by, bz) in bset and (x2 + 1, by, bz) not in visited:
+                x2 += 1
+
+            # Expand along Z (dbt Z → Quake Y)
+            z2 = bz
+            while all(
+                (xi, by, z2 + 1) in bset and (xi, by, z2 + 1) not in visited
+                for xi in range(bx, x2 + 1)
+            ):
+                z2 += 1
+
+            # Expand along Y (dbt Y = up → Quake Z)
+            y2 = by
+            while all(
+                (xi, y2 + 1, zi) in bset and (xi, y2 + 1, zi) not in visited
+                for xi in range(bx, x2 + 1)
+                for zi in range(bz, z2 + 1)
+            ):
+                y2 += 1
+
+            # Mark the whole merged box as visited
+            for xi in range(bx, x2 + 1):
+                for yi in range(by, y2 + 1):
+                    for zi in range(bz, z2 + 1):
+                        visited.add((xi, yi, zi))
+
+            merged.append((bx, by, bz, x2 + 1, y2 + 1, z2 + 1))
+
+        return merged
+
+    # ─ Corner block conversion ─────────────────────────────────────────────
+    @staticmethod
+    def _merge_corners(blocks):
+        """Group type-3 corner blocks by (x,z,orient) and merge contiguous Y runs.
+
+        Returns list of (bx, bz, by_lo, by_hi_excl, orient) tuples.
+        by_lo/by_hi are DBT Y grid indices (by_hi exclusive).
+        """
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for b in blocks:
+            groups[(b["x"], b["z"], b.get("orient", 0))].append(b["y"])
+
+        result = []
+        for (bx, bz, orient), ys in groups.items():
+            ys_sorted = sorted(set(ys))
+            run_start = ys_sorted[0]
+            run_end   = ys_sorted[0]
+            for y in ys_sorted[1:]:
+                if y == run_end + 1:
+                    run_end = y
+                else:
+                    result.append((bx, bz, run_start, run_end + 1, orient))
+                    run_start = run_end = y
+            result.append((bx, bz, run_start, run_end + 1, orient))
+        return result
+
+    @staticmethod
+    def _corner_brush(bx, bz, by_lo, by_hi, orient, sx, sy, sz, tex):
+        """Generate a 5-face pentahedron brush for a merged DBT corner block group.
+
+        Geometry derived from Diabotical's faces.zig plane definitions (all in
+        Quake coords: dbt.X→Q.X, dbt.Z→Q.Y, dbt.Y→Q.Z).  Corner slabs are
+        half-height (sz/2 per slab); when N slabs are merged the brush spans
+        N×(sz/2) vertically, filling any intra-slab gaps for simplicity.
+
+        Orientations (Zig enum: 0=lf_fw,1=lf_bk,2=rt_bk,3=rt_fw):
+          0 → right angle at (qx2,qy1): triangle (qx1,qy1)-(qx2,qy1)-(qx2,qy2)
+          1 → right angle at (qx2,qy2): triangle (qx2,qy1)-(qx2,qy2)-(qx1,qy2)
+          2 → right angle at (qx1,qy2): triangle (qx1,qy1)-(qx1,qy2)-(qx2,qy2)
+          3 → right angle at (qx1,qy1): triangle (qx1,qy1)-(qx2,qy1)-(qx1,qy2)
+        """
+        qx1, qx2 = bx * sx, (bx + 1) * sx
+        qy1, qy2 = bz * sy, (bz + 1) * sy
+        n_slabs  = by_hi - by_lo
+        qz_bot   = by_lo * sz
+        qz_top   = qz_bot + n_slabs * sz
+
+        # Bottom: inward normal +Z (solid above)
+        f_bot = face((qx1,qy1,qz_bot),(qx2,qy1,qz_bot),(qx1,qy2,qz_bot), tex)
+        # Top: inward normal -Z (solid below)
+        f_top = face((qx2,qy2,qz_top),(qx2,qy1,qz_top),(qx1,qy1,qz_top), tex)
+
+        if orient == 0:
+            # Walls: x=qx2 (-X) and y=qy1 (+Y)
+            f_w1  = face((qx2,qy2,qz_top),(qx2,qy2,qz_bot),(qx2,qy1,qz_top), tex)
+            f_w2  = face((qx1,qy1,qz_bot),(qx1,qy1,qz_top),(qx2,qy1,qz_bot), tex)
+            # Diagonal plane: normal (sy,-sx,0) from faces.zig lf_fw
+            f_dia = face((qx2,qy2,qz_top),(qx1,qy1,qz_top+1),(qx1,qy1,qz_top), tex)
+        elif orient == 1:
+            # Walls: x=qx2 (-X) and y=qy2 (-Y)
+            f_w1  = face((qx2,qy2,qz_top),(qx2,qy2,qz_bot),(qx2,qy1,qz_top), tex)
+            f_w2  = face((qx2,qy2,qz_top),(qx1,qy2,qz_top),(qx2,qy2,qz_bot), tex)
+            # Diagonal plane: normal (sy,sx,0) from faces.zig lf_bk
+            f_dia = face((qx1,qy2,qz_top),(qx2,qy1,qz_top+1),(qx2,qy1,qz_top), tex)
+        elif orient == 2:
+            # Walls: x=qx1 (+X) and y=qy2 (-Y)
+            f_w1  = face((qx1,qy1,qz_bot),(qx1,qy2,qz_bot),(qx1,qy1,qz_top), tex)
+            f_w2  = face((qx2,qy2,qz_top),(qx1,qy2,qz_top),(qx2,qy2,qz_bot), tex)
+            # Diagonal plane: normal (-sy,sx,0) from faces.zig rt_bk
+            f_dia = face((qx1,qy1,qz_top),(qx2,qy2,qz_top+1),(qx2,qy2,qz_top), tex)
+        else:  # orient == 3
+            # Walls: x=qx1 (+X) and y=qy1 (+Y)
+            f_w1  = face((qx1,qy1,qz_bot),(qx1,qy2,qz_bot),(qx1,qy1,qz_top), tex)
+            f_w2  = face((qx1,qy1,qz_bot),(qx1,qy1,qz_top),(qx2,qy1,qz_bot), tex)
+            # Diagonal plane: normal (-sy,-sx,0) from faces.zig rt_fw
+            f_dia = face((qx1,qy2,qz_top),(qx2,qy1,qz_top),(qx2,qy1,qz_top+1), tex)
+
+        return write_brush([f_bot, f_top, f_w1, f_w2, f_dia],
+                           f"corner o{orient}")
+
+    # ─ Entity conversion ───────────────────────────────────────────────────
+    @staticmethod
+    def _rbe_entities_to_map(entities, sx, sy, sz):
+        """Convert Diabotical entities to Quake .map entity strings.
+
+        Handles:
+          spawn            → info_player_start
+          trigger_start    → trigger_multiple (action=start_timer)
+          trigger_end      → trigger_multiple (action=end_timer)
+          trigger_split*   → trigger_multiple (action=display_split)
+
+        Entity positions are in Diabotical world units (40 units = 1 block).
+        Axis mapping same as blocks: dbt X→Q X, dbt Z→Q Y, dbt Y→Q Z.
+        Scale values are treated as half-extents in Diabotical world units.
+        """
+        EFX = sx / 40.0  # entity factor: dbt world unit → Quake X
+        EFY = sy / 40.0  # entity factor: dbt world unit → Quake Y (dbt Z axis)
+        EFZ = sz / 40.0  # entity factor: dbt world unit → Quake Z (dbt Y axis)
+        MIN_HALF = 8.0   # minimum brush half-extent in Quake units
+        TRIG_TEX = "common/nodraw"
+
+        lines = []
+        for e in entities:
+            nm  = e["name"]
+            # Convert position (dbt world units → Quake coords)
+            qx = e["x"] * EFX
+            qy = e["z"] * EFY   # dbt Z → Quake Y
+            qz = e["y"] * EFZ   # dbt Y → Quake Z
+            props = {p["name"]: p["val"] for p in e.get("properties", [])}
+
+            if nm == "spawn":
+                lines += [
+                    "{",
+                    '"classname" "info_player_start"',
+                    f'"origin" "{qx:g} {qy:g} {qz:g}"',
+                    '"angle" "0"',
+                    "}",
+                ]
+
+            elif nm.startswith("trigger_start") or nm.startswith("trigger_end") or nm.startswith("trigger_split"):
+                # Trigger half-extents from entity scale (dbt world units)
+                hx = max(MIN_HALF, abs(e["xscale"]) * EFX)
+                hy = max(MIN_HALF, abs(e["zscale"]) * EFY)  # dbt Z → Quake Y
+                hz = max(MIN_HALF, abs(e["yscale"]) * EFZ)  # dbt Y → Quake Z
+                fs = box_faces(
+                    qx - hx, qy - hy, qz - hz,
+                    qx + hx, qy + hy, qz + hz,
+                    TRIG_TEX, TRIG_TEX, TRIG_TEX,
+                    TRIG_TEX, TRIG_TEX, TRIG_TEX,
+                )
+                lines += ["{", '"classname" "trigger_multiple"']
+                if "action" in props:
+                    lines.append(f'"message" "{props["action"]}"')
+                lines.append(write_brush(fs, f"trigger {nm}"))
+                lines.append("}")
+
+            elif "invisible_block_diagonal" in props.get("model", ""):
+                # Diagonal prop → 5-face ramp brush (invisible collision ramp)
+                import math
+                # Use 1-block half-extents (props are always 1 block wide/deep)
+                hx = sx / 2.0
+                hy = sy / 2.0
+                hz = sz / 2.0
+                x0, x1_r = qx - hx, qx + hx
+                y0, y1_r = qy - hy, qy + hy
+                z0, z1_r = qz - hz, qz + hz
+
+                # yrot = rotation around dbt.Y (up) = Quake Z axis
+                # Map to 4 cardinal ramp orientations
+                ang = e.get("yrot", 0.0) % (2 * math.pi)
+                DIAG_TEX = "common/nodraw"
+
+                if ang < math.pi / 4 or ang >= 7 * math.pi / 4:
+                    # ≈0°: upramp along +Q.Y (low at y0, high at y1_r)
+                    rfs = [
+                        face((x0,y1_r,z0),(x0,y1_r,z1_r),(x0,y0,z0),    DIAG_TEX),
+                        face((x0,y1_r,z1_r),(x1_r,y1_r,z1_r),(x1_r,y0,z0), DIAG_TEX),
+                        face((x1_r,y0,z0),(x1_r,y1_r,z0),(x0,y1_r,z0),  DIAG_TEX),
+                        face((x1_r,y1_r,z0),(x1_r,y1_r,z1_r),(x0,y1_r,z1_r), DIAG_TEX),
+                        face((x1_r,y0,z0),(x1_r,y1_r,z1_r),(x1_r,y1_r,z0), DIAG_TEX),
+                    ]
+                elif ang < 3 * math.pi / 4:
+                    # ≈90°: upramp along +Q.X (low at x0, high at x1_r)
+                    rfs = [
+                        face((x0,y0,z0),(x1_r,y0,z1_r),(x1_r,y0,z0),   DIAG_TEX),
+                        face((x0,y1_r,z0),(x1_r,y1_r,z0),(x1_r,y1_r,z1_r), DIAG_TEX),
+                        face((x1_r,y0,z0),(x1_r,y1_r,z0),(x0,y1_r,z0), DIAG_TEX),
+                        face((x1_r,y1_r,z1_r),(x1_r,y1_r,z0),(x1_r,y0,z0), DIAG_TEX),
+                        face((x1_r,y1_r,z1_r),(x1_r,y0,z1_r),(x0,y0,z0), DIAG_TEX),
+                    ]
+                elif ang < 5 * math.pi / 4:
+                    # ≈180°: upramp along -Q.Y (low at y1_r, high at y0)
+                    rfs = [
+                        face((x0,y0,z0),(x0,y0,z1_r),(x0,y1_r,z0),     DIAG_TEX),
+                        face((x0,y0,z1_r),(x1_r,y0,z1_r),(x1_r,y1_r,z0), DIAG_TEX),
+                        face((x1_r,y1_r,z0),(x1_r,y0,z0),(x0,y0,z0),   DIAG_TEX),
+                        face((x1_r,y0,z0),(x1_r,y0,z1_r),(x0,y0,z1_r), DIAG_TEX),
+                        face((x1_r,y1_r,z0),(x1_r,y0,z1_r),(x1_r,y0,z0), DIAG_TEX),
+                    ]
+                else:
+                    # ≈270°: upramp along -Q.X (low at x1_r, high at x0)
+                    rfs = [
+                        face((x1_r,y0,z0),(x0,y0,z1_r),(x0,y0,z0),     DIAG_TEX),
+                        face((x1_r,y1_r,z0),(x0,y1_r,z0),(x0,y1_r,z1_r), DIAG_TEX),
+                        face((x0,y0,z0),(x0,y1_r,z0),(x1_r,y1_r,z0),   DIAG_TEX),
+                        face((x0,y1_r,z1_r),(x0,y1_r,z0),(x0,y0,z0),   DIAG_TEX),
+                        face((x0,y1_r,z1_r),(x0,y0,z1_r),(x1_r,y0,z0), DIAG_TEX),
+                    ]
+
+                lines += [
+                    "{",
+                    '"classname" "func_detail"',
+                    write_brush(rfs, f"diag_prop {nm}"),
+                    "}",
+                ]
+
+        return lines
+
+    # ─ Map string builder ──────────────────────────────────────────────────
+    @staticmethod
+    def _rbe_to_map_string(merged_with_mat, mat_tex, sx, sy, sz,
+                           corner_brushes=None, entity_lines=None):
+        """Convert greedy-merged dbt boxes to Quake .map format.
+
+        merged_with_mat — list of (x1,y1,z1, x2,y2,z2, mat_idx) in dbt grid coords.
+        mat_tex         — dict mapping mat_idx → texture name string.
+        corner_brushes  — list of pre-built brush strings for corner blocks.
+
+        Axis mapping (dbt → Quake):
+          dbt X (right)   → Quake X  (scaled by sx, default 48)
+          dbt Z (forward) → Quake Y  (scaled by sy, default 48)
+          dbt Y (up)      → Quake Z  (scaled by sz, default 42)
+        """
+        lines = [
+            "// Turnt-o-mapper — DBT Import",
+            "{",
+            '"classname" "worldspawn"',
+        ]
+        for bi, (x1, y1, z1, x2, y2, z2, mat_idx) in enumerate(merged_with_mat):
+            qx1, qx2 = x1 * sx, x2 * sx
+            qy1, qy2 = z1 * sy, z2 * sy   # dbt Z → Quake Y
+            qz1, qz2 = y1 * sz, y2 * sz   # dbt Y → Quake Z
+            tex = mat_tex.get(mat_idx, "turnt/turnt_concrete")
+            fs = box_faces(qx1, qy1, qz1, qx2, qy2, qz2,
+                           tex, tex, tex, tex, tex, tex)
+            lines.append(write_brush(fs, f"dbt {bi}"))
+        if corner_brushes:
+            lines.extend(corner_brushes)
+        lines.append("}")
+        if entity_lines:
+            lines.extend(entity_lines)
+        return "\n".join(lines)
+
+    # ─ Import orchestration ─────────────────────────────────────────────────
+    def _on_import_rbe(self):
+        # Turnt textures pool for automatic material→texture mapping
+        _TURNT_POOL = [k for k in ALL_TEXTURES if k.startswith("turnt/turnt_")]
+
+        def run():
+            path = self._v_rbe_path.get().strip()
+            if not path:
+                self._rbe_log_write("No file selected.", "error")
+                return
+
+            sx = self._v_rbe_sx.get()
+            sy = self._v_rbe_sy.get()
+            sz = self._v_rbe_sz.get()
+            want_solid = self._v_rbe_solid.get()
+
+            try:
+                # 1. Parse
+                self._rbe_log_write(f"Parsing {path} …", "info")
+                t0 = time.perf_counter()
+                blocks, materials, entities, ver = self._parse_rbe(path)
+                dt = time.perf_counter() - t0
+                self._rbe_log_write(
+                    f"Parsed ver={ver}: {len(blocks):,} blocks, "
+                    f"{len(materials)} materials, {len(entities)} entities "
+                    f"in {dt:.2f}s", "info")
+
+                # 2. Filter by type
+                # type 1 = solid blocks, type 3 = corner (diagonal wall) blocks
+                solid_blocks  = [b for b in blocks if b["type"] == 1 and want_solid]
+                corner_blocks = [b for b in blocks if b["type"] == 3]
+                self._rbe_log_write(
+                    f"Filtered: {len(solid_blocks):,} solid, "
+                    f"{len(corner_blocks):,} corner blocks")
+
+                # 3. Build material→texture mapping from unique top-face materials
+                mat_groups: Dict[int, list] = {}
+                for b in solid_blocks:
+                    m = b["mats"]["top"]
+                    mat_groups.setdefault(m, []).append(b)
+
+                mat_tex: Dict[int, str] = {}
+                self._rbe_log_write("Material → texture mapping:")
+                for pool_i, m_idx in enumerate(sorted(mat_groups.keys())):
+                    tex = _TURNT_POOL[pool_i % len(_TURNT_POOL)]
+                    mat_tex[m_idx] = tex
+                    mat_name = (materials[m_idx]
+                                if m_idx < len(materials) else "?")
+                    self._rbe_log_write(
+                        f"  [{m_idx}] {mat_name!r} → {tex!r}")
+
+                # 4. Per-material greedy merge (solid blocks)
+                self._rbe_log_write(
+                    f"Merging {len(mat_groups)} material groups …")
+                t0 = time.perf_counter()
+                merged_with_mat = []   # (x1,y1,z1,x2,y2,z2,mat_idx)
+                for m_idx, group in mat_groups.items():
+                    for box in self._greedy_merge(group):
+                        merged_with_mat.append((*box, m_idx))
+                dt = time.perf_counter() - t0
+                self._rbe_log_write(
+                    f"Merged {len(solid_blocks):,} solid → "
+                    f"{len(merged_with_mat):,} brushes in {dt:.2f}s", "info")
+
+                # 4b. Corner block conversion (type 3 → pentahedron brushes)
+                corner_tex = (_TURNT_POOL[len(mat_groups) % len(_TURNT_POOL)]
+                              if _TURNT_POOL else "turnt/turnt_concrete")
+                t0 = time.perf_counter()
+                corner_runs = self._merge_corners(corner_blocks)
+                corner_brush_strs = [
+                    self._corner_brush(bx, bz, by_lo, by_hi, orient,
+                                       sx, sy, sz, corner_tex)
+                    for (bx, bz, by_lo, by_hi, orient) in corner_runs
+                ]
+                dt = time.perf_counter() - t0
+                self._rbe_log_write(
+                    f"Corner: {len(corner_blocks):,} slabs → "
+                    f"{len(corner_brush_strs):,} brushes in {dt:.2f}s", "info")
+
+                # 5. Entity conversion
+                entity_lines = self._rbe_entities_to_map(
+                    entities, sx, sy, sz)
+                n_spawns   = sum(1 for e in entities if e["name"] == "spawn")
+                n_triggers = sum(1 for e in entities
+                                 if e["name"].startswith("trigger_"))
+                n_diag     = sum(
+                    1 for e in entities
+                    if any("invisible_block_diagonal" in p["val"]
+                           for p in e.get("properties", [])))
+                self._rbe_log_write(
+                    f"Entities: {n_spawns} spawn, "
+                    f"{n_triggers} triggers, {n_diag} diagonal props")
+
+                # 6. Generate .map string
+                self._rbe_log_write("Generating .map …")
+                t0 = time.perf_counter()
+                ms = self._rbe_to_map_string(
+                    merged_with_mat, mat_tex, sx, sy, sz,
+                    corner_brushes=corner_brush_strs,
+                    entity_lines=entity_lines)
+                dt = time.perf_counter() - t0
+                kb = len(ms.encode()) / 1024
+                total_brushes = len(merged_with_mat) + len(corner_brush_strs)
+                self._rbe_log_write(
+                    f"Map: {total_brushes:,} brushes "
+                    f"({len(merged_with_mat):,} solid + {len(corner_brush_strs):,} corner), "
+                    f"{kb:.1f} KB in {dt:.2f}s", "info")
+
+                self._map_str = ms
+
+                # 7. Update previews with fake Room objects (Quake coords)
+                fake_rooms = [
+                    Room(
+                        x=x1 * sx, y=z1 * sy, z=y1 * sz,
+                        w=max(1, (x2 - x1) * sx),
+                        d=max(1, (z2 - z1) * sy),
+                        h=max(1, (y2 - y1) * sz),
+                        idx=i,
+                    )
+                    for i, (x1, y1, z1, x2, y2, z2, _mi)
+                    in enumerate(merged_with_mat)
+                ]
+                self._rooms   = fake_rooms
+                self._bridges = []
+                self.after(0, self._redraw)
+                self.after(0, lambda r=fake_rooms:
+                           self._viewer3d.load(r, []))
+
+                self._rbe_log_write(
+                    "Done! Preview updated. Use 'Save .map' to write the file.",
+                    "info")
+
+            except Exception as ex:
+                import traceback; traceback.print_exc()
+                self._rbe_log_write(f"Error: {ex}", "error")
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_rbe_save(self):
+        if not self._map_str:
+            self._rbe_log_write("Nothing to save — import first.", "error")
+            return
+        self._do_save(manual=True)
 
     # ── RIGHT PANEL ───────────────────────────────────────────────────────────
     def _build_right(self, p):
