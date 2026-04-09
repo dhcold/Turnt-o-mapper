@@ -2759,9 +2759,10 @@ class App(tk.Tk):
 
         Handles:
           spawn            → info_player_start
-          trigger_start    → trigger_multiple (action=start_timer)
-          trigger_end      → trigger_multiple (action=end_timer)
-          trigger_split*   → trigger_multiple (action=display_split)
+          trigger_start    → trigger_multiple + target_startTimer
+          trigger_end      → trigger_multiple + target_stopTimer
+          trigger_split*   → trigger_multiple + target_checkpoint_N
+          diagonal props   → func_detail pentahedron brush
 
         Entity positions are in Diabotical world units (40 units = 1 block).
         Axis mapping same as blocks: dbt X→Q X, dbt Z→Q Y, dbt Y→Q Z.
@@ -2771,9 +2772,12 @@ class App(tk.Tk):
         EFY = sy / 40.0  # entity factor: dbt world unit → Quake Y (dbt Z axis)
         EFZ = sz / 40.0  # entity factor: dbt world unit → Quake Z (dbt Y axis)
         MIN_HALF = 8.0   # minimum brush half-extent in Quake units
-        TRIG_TEX = "common/nodraw"
+        TRIG_TEX = "common/trigger"
+        SL = 8           # slab thickness for point entities
 
         lines = []
+        split_count = 0   # counter for checkpoint numbering
+
         for e in entities:
             nm  = e["name"]
             # Convert position (dbt world units → Quake coords)
@@ -2791,82 +2795,151 @@ class App(tk.Tk):
                     "}",
                 ]
 
-            elif nm.startswith("trigger_start") or nm.startswith("trigger_end") or nm.startswith("trigger_split"):
-                # Trigger half-extents from entity scale (dbt world units)
+            elif nm.startswith("trigger_start"):
+                # ── Start timer trigger ───────────────────────────────────
+                # Brush entity: trigger_multiple targeting target_startTimer
                 hx = max(MIN_HALF, abs(e["xscale"]) * EFX)
-                hy = max(MIN_HALF, abs(e["zscale"]) * EFY)  # dbt Z → Quake Y
-                hz = max(MIN_HALF, abs(e["yscale"]) * EFZ)  # dbt Y → Quake Z
+                hy = max(MIN_HALF, abs(e["zscale"]) * EFY)
+                hz = max(MIN_HALF, abs(e["yscale"]) * EFZ)
                 fs = box_faces(
                     qx - hx, qy - hy, qz - hz,
                     qx + hx, qy + hy, qz + hz,
                     TRIG_TEX, TRIG_TEX, TRIG_TEX,
                     TRIG_TEX, TRIG_TEX, TRIG_TEX,
                 )
-                lines += ["{", '"classname" "trigger_multiple"']
-                if "action" in props:
-                    lines.append(f'"message" "{props["action"]}"')
-                lines.append(write_brush(fs, f"trigger {nm}"))
-                lines.append("}")
-
-            elif "invisible_block_diagonal" in props.get("model", ""):
-                # Diagonal prop → 5-face ramp brush (invisible collision ramp)
-                import math
-                # Use 1-block half-extents (props are always 1 block wide/deep)
-                hx = sx / 2.0
-                hy = sy / 2.0
-                hz = sz / 2.0
-                x0, x1_r = qx - hx, qx + hx
-                y0, y1_r = qy - hy, qy + hy
-                z0, z1_r = qz - hz, qz + hz
-
-                # yrot = rotation around dbt.Y (up) = Quake Z axis
-                # Map to 4 cardinal ramp orientations
-                ang = e.get("yrot", 0.0) % (2 * math.pi)
-                DIAG_TEX = "common/nodraw"
-
-                if ang < math.pi / 4 or ang >= 7 * math.pi / 4:
-                    # ≈0°: upramp along +Q.Y (low at y0, high at y1_r)
-                    rfs = [
-                        face((x0,y1_r,z0),(x0,y1_r,z1_r),(x0,y0,z0),    DIAG_TEX),
-                        face((x0,y1_r,z1_r),(x1_r,y1_r,z1_r),(x1_r,y0,z0), DIAG_TEX),
-                        face((x1_r,y0,z0),(x1_r,y1_r,z0),(x0,y1_r,z0),  DIAG_TEX),
-                        face((x1_r,y1_r,z0),(x1_r,y1_r,z1_r),(x0,y1_r,z1_r), DIAG_TEX),
-                        face((x1_r,y0,z0),(x1_r,y1_r,z1_r),(x1_r,y1_r,z0), DIAG_TEX),
-                    ]
-                elif ang < 3 * math.pi / 4:
-                    # ≈90°: upramp along +Q.X (low at x0, high at x1_r)
-                    rfs = [
-                        face((x0,y0,z0),(x1_r,y0,z1_r),(x1_r,y0,z0),   DIAG_TEX),
-                        face((x0,y1_r,z0),(x1_r,y1_r,z0),(x1_r,y1_r,z1_r), DIAG_TEX),
-                        face((x1_r,y0,z0),(x1_r,y1_r,z0),(x0,y1_r,z0), DIAG_TEX),
-                        face((x1_r,y1_r,z1_r),(x1_r,y1_r,z0),(x1_r,y0,z0), DIAG_TEX),
-                        face((x1_r,y1_r,z1_r),(x1_r,y0,z1_r),(x0,y0,z0), DIAG_TEX),
-                    ]
-                elif ang < 5 * math.pi / 4:
-                    # ≈180°: upramp along -Q.Y (low at y1_r, high at y0)
-                    rfs = [
-                        face((x0,y0,z0),(x0,y0,z1_r),(x0,y1_r,z0),     DIAG_TEX),
-                        face((x0,y0,z1_r),(x1_r,y0,z1_r),(x1_r,y1_r,z0), DIAG_TEX),
-                        face((x1_r,y1_r,z0),(x1_r,y0,z0),(x0,y0,z0),   DIAG_TEX),
-                        face((x1_r,y0,z0),(x1_r,y0,z1_r),(x0,y0,z1_r), DIAG_TEX),
-                        face((x1_r,y1_r,z0),(x1_r,y0,z1_r),(x1_r,y0,z0), DIAG_TEX),
-                    ]
-                else:
-                    # ≈270°: upramp along -Q.X (low at x1_r, high at x0)
-                    rfs = [
-                        face((x1_r,y0,z0),(x0,y0,z1_r),(x0,y0,z0),     DIAG_TEX),
-                        face((x1_r,y1_r,z0),(x0,y1_r,z0),(x0,y1_r,z1_r), DIAG_TEX),
-                        face((x0,y0,z0),(x0,y1_r,z0),(x1_r,y1_r,z0),   DIAG_TEX),
-                        face((x0,y1_r,z1_r),(x0,y1_r,z0),(x0,y0,z0),   DIAG_TEX),
-                        face((x0,y1_r,z1_r),(x0,y0,z1_r),(x1_r,y0,z0), DIAG_TEX),
-                    ]
-
                 lines += [
                     "{",
-                    '"classname" "func_detail"',
-                    write_brush(rfs, f"diag_prop {nm}"),
+                    '"classname" "trigger_multiple"',
+                    '"target" "target_startTimer"',
+                    write_brush(fs, f"trigger {nm}"),
                     "}",
                 ]
+                # Point entity: target_startTimer
+                lines += [
+                    "{",
+                    '"classname" "target_startTimer"',
+                    f'"origin" "{qx:g} {qy:g} {qz:g}"',
+                    '"targetname" "target_startTimer"',
+                    "}",
+                ]
+
+            elif nm.startswith("trigger_end"):
+                # ── Stop timer trigger ────────────────────────────────────
+                hx = max(MIN_HALF, abs(e["xscale"]) * EFX)
+                hy = max(MIN_HALF, abs(e["zscale"]) * EFY)
+                hz = max(MIN_HALF, abs(e["yscale"]) * EFZ)
+                fs = box_faces(
+                    qx - hx, qy - hy, qz - hz,
+                    qx + hx, qy + hy, qz + hz,
+                    TRIG_TEX, TRIG_TEX, TRIG_TEX,
+                    TRIG_TEX, TRIG_TEX, TRIG_TEX,
+                )
+                lines += [
+                    "{",
+                    '"classname" "trigger_multiple"',
+                    '"target" "target_stopTimer"',
+                    write_brush(fs, f"trigger {nm}"),
+                    "}",
+                ]
+                # Point entity: target_stopTimer
+                lines += [
+                    "{",
+                    '"classname" "target_stopTimer"',
+                    f'"origin" "{qx:g} {qy:g} {qz:g}"',
+                    '"targetname" "target_stopTimer"',
+                    "}",
+                ]
+
+            elif nm.startswith("trigger_split"):
+                # ── Checkpoint trigger ────────────────────────────────────
+                split_count += 1
+                tname = f"target_checkpoint_{split_count}"
+                hx = max(MIN_HALF, abs(e["xscale"]) * EFX)
+                hy = max(MIN_HALF, abs(e["zscale"]) * EFY)
+                hz = max(MIN_HALF, abs(e["yscale"]) * EFZ)
+                fs = box_faces(
+                    qx - hx, qy - hy, qz - hz,
+                    qx + hx, qy + hy, qz + hz,
+                    TRIG_TEX, TRIG_TEX, TRIG_TEX,
+                    TRIG_TEX, TRIG_TEX, TRIG_TEX,
+                )
+                lines += [
+                    "{",
+                    '"classname" "trigger_multiple"',
+                    f'"target" "{tname}"',
+                    write_brush(fs, f"trigger {nm}"),
+                    "}",
+                ]
+                # Point entity: target_checkpoint
+                lines += [
+                    "{",
+                    '"classname" "target_checkpoint"',
+                    f'"origin" "{qx:g} {qy:g} {qz:g}"',
+                    f'"targetname" "{tname}"',
+                    f'"count" "{split_count}"',
+                    "}",
+                ]
+
+            elif any("invisible_block_diagonal" in str(v).lower()
+                for v in props.values()):
+                    # Diagonal prop → 5-face ramp brush (invisible collision ramp)
+                    import math
+                    # Use 1-block half-extents (props are always 1 block wide/deep)
+                    hx = sx / 2.0
+                    hy = sy / 2.0
+                    hz = sz / 2.0
+                    x0, x1_r = qx - hx, qx + hx
+                    y0, y1_r = qy - hy, qy + hy
+                    z0, z1_r = qz - hz, qz + hz
+
+                    # yrot = rotation around dbt.Y (up) = Quake Z axis
+                    # Map to 4 cardinal ramp orientations
+                    ang = e.get("yrot", 0.0) % (2 * math.pi)
+                    DIAG_TEX = "turnt/turnt_mint_t2"
+
+                    if ang < math.pi / 4 or ang >= 7 * math.pi / 4:
+                        # ≈0°: upramp along +Q.Y (low at y0, high at y1_r)
+                        rfs = [
+                            face((x0,y1_r,z0),(x0,y1_r,z1_r),(x0,y0,z0),    DIAG_TEX),
+                            face((x0,y1_r,z1_r),(x1_r,y1_r,z1_r),(x1_r,y0,z0), DIAG_TEX),
+                            face((x1_r,y0,z0),(x1_r,y1_r,z0),(x0,y1_r,z0),  DIAG_TEX),
+                            face((x1_r,y1_r,z0),(x1_r,y1_r,z1_r),(x0,y1_r,z1_r), DIAG_TEX),
+                            face((x1_r,y0,z0),(x1_r,y1_r,z1_r),(x1_r,y1_r,z0), DIAG_TEX),
+                        ]
+                    elif ang < 3 * math.pi / 4:
+                        # ≈90°: upramp along +Q.X (low at x0, high at x1_r)
+                        rfs = [
+                            face((x0,y0,z0),(x1_r,y0,z1_r),(x1_r,y0,z0),   DIAG_TEX),
+                            face((x0,y1_r,z0),(x1_r,y1_r,z0),(x1_r,y1_r,z1_r), DIAG_TEX),
+                            face((x1_r,y0,z0),(x1_r,y1_r,z0),(x0,y1_r,z0), DIAG_TEX),
+                            face((x1_r,y1_r,z1_r),(x1_r,y1_r,z0),(x1_r,y0,z0), DIAG_TEX),
+                            face((x1_r,y1_r,z1_r),(x1_r,y0,z1_r),(x0,y0,z0), DIAG_TEX),
+                        ]
+                    elif ang < 5 * math.pi / 4:
+                        # ≈180°: upramp along -Q.Y (low at y1_r, high at y0)
+                        rfs = [
+                            face((x0,y0,z0),(x0,y0,z1_r),(x0,y1_r,z0),     DIAG_TEX),
+                            face((x0,y0,z1_r),(x1_r,y0,z1_r),(x1_r,y1_r,z0), DIAG_TEX),
+                            face((x1_r,y1_r,z0),(x1_r,y0,z0),(x0,y0,z0),   DIAG_TEX),
+                            face((x1_r,y0,z0),(x1_r,y0,z1_r),(x0,y0,z1_r), DIAG_TEX),
+                            face((x1_r,y1_r,z0),(x1_r,y0,z1_r),(x1_r,y0,z0), DIAG_TEX),
+                        ]
+                    else:
+                        # ≈270°: upramp along -Q.X (low at x1_r, high at x0)
+                        rfs = [
+                            face((x1_r,y0,z0),(x0,y0,z1_r),(x0,y0,z0),     DIAG_TEX),
+                            face((x1_r,y1_r,z0),(x0,y1_r,z0),(x0,y1_r,z1_r), DIAG_TEX),
+                            face((x0,y0,z0),(x0,y1_r,z0),(x1_r,y1_r,z0),   DIAG_TEX),
+                            face((x0,y1_r,z1_r),(x0,y1_r,z0),(x0,y0,z0),   DIAG_TEX),
+                            face((x0,y1_r,z1_r),(x0,y0,z1_r),(x1_r,y0,z0), DIAG_TEX),
+                        ]
+
+                    lines += [
+                        "{",
+                        '"classname" "func_detail"',
+                        write_brush(rfs, f"diag_prop {nm}"),
+                        "}",
+                    ]
 
         return lines
 
