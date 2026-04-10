@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "turnt-o-mapper"
+dynamic = ["version"]
+description = "Quake 3 .map generator and Diabotical importer"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "PyQt6",
+    "Pillow",
+]
+
+[project.scripts]
+turnt-o-mapper = "turnt_o_mapper.__main__:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "turnt_o_mapper.__version__.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["turnt_o_mapper*"]
