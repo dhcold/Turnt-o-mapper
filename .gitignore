@@ -22,6 +22,7 @@ env/
 # App-generated files (output maps, user config)
 generated.map
 *.map
+*.rbe
 turnt_config.json
 
 # Claude Code workspace
