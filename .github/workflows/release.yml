@@ -17,7 +17,7 @@ jobs:
               --onefile
               --windowed
               --name turnt-o-mapper
-              --icon assets/icon.ico
+              --collect-all PyQt6
             dist_file: turnt-o-mapper.exe
 
           - os: macos-latest
