@@ -22,7 +22,7 @@ except ImportError:
 ALL_TEXTURES: Dict[str, int] = {
     "NULL":2,"common/caulk":2,"common/lavacaulk":4,"common/nodraw":2,
     "common/nodrawnonsolid":2,"common/slick":5,"common/slimecaulk":4,
-    "common/watercaulk":3,"common/weapclip":2,
+    "common/watercaulk":3,"common/weapclip":2,"common/playerclip":2,
     "turnt/temp_blue":8,"turnt/temp_dark":0,"turnt/temp_green":7,
     "turnt/temp_light":1,"turnt/temp_orange":9,"turnt/temp_purple":10,
     "turnt/temp_red":6,"turnt/temp_yellow":11,
@@ -64,27 +64,27 @@ DOOR_H  = 128
 #  THEME
 # ══════════════════════════════════════════════════════════════════════════════
 T = {
-    "bg":        "#0b1020",
-    "bg_panel":  "#121a2b",
-    "bg_card":   "#17233a",
-    "bg_input":  "#0f1728",
-    "accent":    "#59d4ff",
-    "accent2":   "#7c6cff",
-    "text":      "#eaf1ff",
-    "text_dim":  "#97a6c4",
-    "success":   "#3ddc97",
-    "warning":   "#ffb86b",
-    "border":    "#273453",
+    "bg":        "#0c0e1a",
+    "bg_panel":  "#12162a",
+    "bg_card":   "#1a1f38",
+    "bg_input":  "#0e1224",
+    "accent":    "#4fc3f7",
+    "accent2":   "#9575cd",
+    "text":      "#e8eaf6",
+    "text_dim":  "#78849e",
+    "success":   "#66bb6a",
+    "warning":   "#ffa726",
+    "border":    "#2a3050",
     "btn_fg":    "#ffffff",
-    "prev_bg":   "#0d1526",
-    "room_col":  "#1e3960",
-    "room_bdr":  "#59d4ff",
-    "corr_col":  "#1b2a40",
-    "start_col": "#11452f",
-    "end_col":   "#4a1a2f",
-    "lbx_bg":    "#0f1728",
-    "lbx_sel":   "#223454",
-    "dot_grid":  "#1a2740",
+    "prev_bg":   "#0b0f1e",
+    "room_col":  "#1a3358",
+    "room_bdr":  "#4fc3f7",
+    "corr_col":  "#162238",
+    "start_col": "#1b5e20",
+    "end_col":   "#b71c1c",
+    "lbx_bg":    "#0e1224",
+    "lbx_sel":   "#263850",
+    "dot_grid":  "#182236",
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1722,9 +1722,11 @@ class Viewer3D(tk.Canvas):
         self._wasd_job = self.after(16, self._wasd_tick)
 
     # ── public API ────────────────────────────────────────────────────────────
-    def load(self, rooms: List[Room], bridges: List[Bridge]):
+    def load(self, rooms: List[Room], bridges: List[Bridge],
+             show_labels: bool = True):
         self._rooms   = rooms
         self._bridges = bridges
+        self._show_labels = show_labels
         self._pan_x   = 0.0
         self._pan_y   = 0.0
         self._fit()
@@ -1862,10 +1864,16 @@ class Viewer3D(tk.Canvas):
                 self.create_line(pa[0],pa[1],pb[0],pb[1],
                                  fill=edge_col, width=1)
 
-            # room number label at projected centroid
-            sx, sy = self._project(room.cx(), room.cy(), room.z2)
-            self.create_text(sx, sy-8, text=str(idx+1),
-                             fill=T["text"], font=("Segoe UI", 7, "bold"))
+            # room number label — LOD: skip when too small or too dense
+            if getattr(self, '_show_labels', True):
+                p_lo = self._project(room.x1, room.y1, room.z2)
+                p_hi = self._project(room.x2, room.y2, room.z2)
+                proj_size = max(abs(p_hi[0]-p_lo[0]), abs(p_hi[1]-p_lo[1]))
+                label_gap = max(1, int(25 / max(proj_size, 1)))
+                if proj_size > 18 and idx % label_gap == 0:
+                    sx, sy = (p_lo[0]+p_hi[0])/2, (p_lo[1]+p_hi[1])/2
+                    self.create_text(sx, sy-8, text=str(idx+1),
+                                     fill=T["text"], font=("Segoe UI", 7, "bold"))
 
         # compass / info
         self.create_text(8, 8,
@@ -1911,9 +1919,12 @@ def _load_app_cfg() -> dict:
         return {}
 
 def _save_app_cfg(data: dict):
+    """Merge *data* into the existing config file and save."""
     try:
+        existing = _load_app_cfg()
+        existing.update(data)
         with open(_CFG_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+            json.dump(existing, f, indent=2)
     except Exception:
         pass
 
@@ -1930,12 +1941,15 @@ class App(tk.Tk):
         self._last_map_path  = ""        # path of last saved .map (for launcher)
         self._rooms:   List[Room]   = []
         self._bridges: List[Bridge] = []
+        self._is_rbe_import  = False     # True when preview shows imported map
 
         app_cfg = _load_app_cfg()
 
-        self._tex_folder = tk.StringVar(value="")
+        self._tex_folder = tk.StringVar(
+            value=app_cfg.get("tex_folder", ""))
         self._out_path   = tk.StringVar(
-            value=os.path.join(os.getcwd(), "generated.map"))
+            value=app_cfg.get("out_path",
+                              os.path.join(os.getcwd(), "generated.map")))
         self._game_exe   = tk.StringVar(value=app_cfg.get("game_exe", ""))
         self._tex_paths: Dict[str, str]    = {}
         self._thumb_refs: Dict[str, object] = {}
@@ -1946,6 +1960,66 @@ class App(tk.Tk):
 
         self._build_styles()
         self._build_ui()
+
+        # ── Restore all settings from config ──────────────────────────────────
+        # RBE import
+        self._v_rbe_sx.set(app_cfg.get("rbe_sx", 48))
+        self._v_rbe_sy.set(app_cfg.get("rbe_sy", 48))
+        self._v_rbe_sz.set(app_cfg.get("rbe_sz", 42))
+        if app_cfg.get("rbe_path"):
+            self._v_rbe_path.set(app_cfg["rbe_path"])
+        # Generation
+        if "n_rooms" in app_cfg:
+            self._v_rooms.set(app_cfg["n_rooms"])
+        if "layout" in app_cfg:
+            self._v_layout.set(app_cfg["layout"])
+        if "corr_frac" in app_cfg:
+            self._v_corr_frac.set(app_cfg["corr_frac"])
+        if "height_var" in app_cfg:
+            self._v_height.set(app_cfg["height_var"])
+        if "checkpoints" in app_cfg:
+            self._v_checks.set(app_cfg["checkpoints"])
+        if "use_physics" in app_cfg:
+            self._v_use_physics.set(app_cfg["use_physics"])
+        # Room sizes
+        for k, v in self._sz.items():
+            cfg_key = f"sz_{k}"
+            if cfg_key in app_cfg:
+                v.set(app_cfg[cfg_key])
+        # Physics params
+        for attr in ("_v_u_base", "_v_u_gain", "_v_t_air",
+                     "_v_strafe_f", "_v_rpt"):
+            if attr in app_cfg and hasattr(self, attr):
+                getattr(self, attr).set(app_cfg[attr])
+        # Preview
+        if "prev_labels" in app_cfg:
+            self._v_prev_labels.set(app_cfg["prev_labels"])
+        if "prev_hmap" in app_cfg:
+            self._v_prev_hmap.set(app_cfg["prev_hmap"])
+        if "prev_ramps" in app_cfg:
+            self._v_prev_ramps.set(app_cfg["prev_ramps"])
+
+        # ── Auto-save all settings on any change ──────────────────────────────
+        self._cfg_save_pending = False
+        def _schedule_save(*_):
+            if not self._cfg_save_pending:
+                self._cfg_save_pending = True
+                self.after(500, self._flush_settings)
+        # Collect ALL tracked variables
+        tracked = [self._out_path, self._tex_folder, self._game_exe,
+                   self._v_rbe_path, self._v_rbe_sx, self._v_rbe_sy,
+                   self._v_rbe_sz, self._v_rooms, self._v_layout,
+                   self._v_corr_frac, self._v_height, self._v_checks,
+                   self._v_use_physics, self._v_prev_labels,
+                   self._v_prev_hmap, self._v_prev_ramps]
+        tracked.extend(self._sz.values())
+        for attr in ("_v_u_base", "_v_u_gain", "_v_t_air",
+                     "_v_strafe_f", "_v_rpt"):
+            if hasattr(self, attr):
+                tracked.append(getattr(self, attr))
+        for var in tracked:
+            var.trace_add("write", _schedule_save)
+
         self._randomize_seed(silent=True)
         self._log("Turnt-o-mapper ready. Configure and hit Generate!", "info")
 
@@ -1983,19 +2057,29 @@ class App(tk.Tk):
     # ── master layout ─────────────────────────────────────────────────────────
     def _build_ui(self):
         # Header
-        hdr = tk.Frame(self, bg=T["bg_panel"])
+        hdr = tk.Frame(self, bg=T["bg_card"])
         hdr.pack(fill="x")
-        tk.Frame(hdr, bg=T["accent"], height=3).pack(fill="x")
-        hdr_inner = tk.Frame(hdr, bg=T["bg_panel"], pady=12)
+        # gradient accent stripe
+        stripe = tk.Canvas(hdr, height=3, bg=T["bg_card"],
+                           highlightthickness=0)
+        stripe.pack(fill="x")
+        stripe.bind("<Configure>", lambda e: (
+            stripe.delete("all"),
+            stripe.create_rectangle(0, 0, e.width, 3, fill=T["accent"],
+                                    outline="")))
+        hdr_inner = tk.Frame(hdr, bg=T["bg_card"], pady=10)
         hdr_inner.pack(fill="x", padx=18)
-        tk.Label(hdr_inner, text="TURNT-O-MAPPER",
-                 bg=T["bg_panel"], fg=T["text"],
-                 font=("Segoe UI", 20, "bold")).pack(side="left")
+        tk.Label(hdr_inner, text="TURNT",
+                 bg=T["bg_card"], fg=T["accent"],
+                 font=("Consolas", 18, "bold")).pack(side="left")
+        tk.Label(hdr_inner, text="-O-MAPPER",
+                 bg=T["bg_card"], fg=T["text"],
+                 font=("Consolas", 18, "bold")).pack(side="left")
         tk.Frame(hdr_inner, bg=T["accent"], width=2).pack(
-            side="left", fill="y", padx=12, pady=2)
-        tk.Label(hdr_inner, text="Turnt .map generator",
-                 bg=T["bg_panel"], fg=T["text_dim"],
-                 font=("Segoe UI", 9)).pack(side="left")
+            side="left", fill="y", padx=14, pady=2)
+        tk.Label(hdr_inner, text=".map generator + DBT importer",
+                 bg=T["bg_card"], fg=T["text_dim"],
+                 font=("Segoe UI", 8)).pack(side="left")
 
         body = ttk.Frame(self)
         body.pack(fill="both", expand=True, padx=12, pady=(8, 8))
@@ -2027,13 +2111,34 @@ class App(tk.Tk):
         t1 = ttk.Frame(nb, style="P.TFrame", padding=8)
         t2 = ttk.Frame(nb, style="P.TFrame", padding=8)
         t3 = ttk.Frame(nb, style="P.TFrame", padding=8)
+        t4 = ttk.Frame(nb, style="P.TFrame", padding=8)
         nb.add(t1, text="  Generate  ")
-        nb.add(t2, text="  Textures  ")
-        nb.add(t3, text="  Settings  ")
+        nb.add(t2, text="  DBT Import  ")
+        nb.add(t3, text="  Textures  ")
+        nb.add(t4, text="  Settings  ")
 
         self._tab_generate(t1)
-        self._tab_textures(t2)
-        self._tab_settings(t3)
+        self._tab_dbt_import(t2)
+        self._tab_textures(t3)
+        self._tab_settings(t4)
+
+        # ── Shared action bar (below tabs) ────────────────────────────────
+        ttk.Separator(p, orient="horizontal").pack(fill="x", pady=(6, 4))
+        shared_row = ttk.Frame(p, style="P.TFrame")
+        shared_row.pack(fill="x", pady=(0, 4))
+        shared_row.columnconfigure(0, weight=1)
+        shared_row.columnconfigure(1, weight=0)
+        shared_row.columnconfigure(2, weight=1)
+        BTN_F = ("Segoe UI", 9, "bold")
+        self._btn(shared_row, "Save .map", self._on_save,
+                  color=T["success"], font=BTN_F).grid(
+                      row=0, column=0, sticky="ew", padx=(0, 3))
+        self._btn(shared_row, "Open folder", self._on_open_folder,
+                  color=T["accent2"], font=BTN_F).grid(
+                      row=0, column=1, sticky="ew", padx=3)
+        self._btn(shared_row, "Launch game", self._on_launch_game,
+                  color=T["warning"], font=BTN_F).grid(
+                      row=0, column=2, sticky="ew", padx=(3, 0))
 
         # ─ Tab: Generate ───────────────────────────────────────────────────
     def _tab_generate(self, p):
@@ -2060,23 +2165,13 @@ class App(tk.Tk):
         self._seed_spin.pack(side="left", padx=(8, 0), fill="x", expand=True)
 
         # Action buttons
-        self._btn(p, "⚡ Generate", self._on_generate,
+        gen_row = ttk.Frame(p, style="P.TFrame")
+        gen_row.pack(fill="x", pady=(6, 4))
+        self._btn(gen_row, "⚡ Generate", self._on_generate,
                   color=T["accent"],
-                  font=("Segoe UI", 11, "bold")).pack(fill="x", pady=(6, 4))
-        r2 = ttk.Frame(p, style="P.TFrame")
-        r2.pack(fill="x", pady=(0, 4))
-        self._btn(r2, "💾 Save .map", self._on_save,
-                  color=T["success"]).pack(side="left", fill="x",
-                                           expand=True, padx=(0, 4))
-        self._btn(r2, "📂", self._on_open_folder,
-                  color=T["accent2"], w=3).pack(side="left", padx=(0, 4))
-        self._btn(r2, "🎲 New seed", self._randomize_seed,
+                  font=("Segoe UI", 11, "bold")).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self._btn(gen_row, "🎲 New seed", self._randomize_seed,
                   color=T["accent2"]).pack(side="left", fill="x", expand=True)
-        self._launch_btn = self._btn(p, "🚀 Launch in game",
-                                     self._on_launch_game,
-                                     color=T["warning"],
-                                     font=("Segoe UI", 9, "bold"))
-        self._launch_btn.pack(fill="x", pady=(0, 2))
 
         ttk.Separator(p, orient="horizontal").pack(fill="x", pady=(4, 0))
 
@@ -2445,6 +2540,842 @@ class App(tk.Tk):
         # ── Game folder ───────────────────────────────────────────────────────
         _path_row(p, "Game executable", self._game_exe, self._browse_game_exe)
 
+        # ── Preview options ───────────────────────────────────────────────────
+        self._sec(p, "Preview")
+        self._v_prev_labels = tk.BooleanVar(value=True)
+        self._v_prev_hmap   = tk.BooleanVar(value=True)
+        self._v_prev_ramps  = tk.BooleanVar(value=True)
+        for text, var in [
+            ("Show room numbers", self._v_prev_labels),
+            ("Show heightmap bar", self._v_prev_hmap),
+            ("Show ramps in 3D preview", self._v_prev_ramps),
+        ]:
+            ttk.Checkbutton(p, text=text, variable=var).pack(
+                anchor="w", pady=1)
+
+
+    # ─ Tab: DBT Import ─────────────────────────────────────────────────────
+    def _tab_dbt_import(self, p):
+        # ── File picker ──────────────────────────────────────────────────────
+        self._sec(p, "Source .rbe file")
+        file_row = ttk.Frame(p, style="P.TFrame")
+        file_row.pack(fill="x", pady=(0, 8))
+        self._v_rbe_path = tk.StringVar(value="")
+        ttk.Entry(file_row, textvariable=self._v_rbe_path,
+                  font=("Consolas", 8)).pack(side="left", fill="x", expand=True)
+
+        def _browse_rbe():
+            path_ = filedialog.askopenfilename(
+                title="Open Diabotical map",
+                filetypes=[("Diabotical Map", "*.rbe"), ("All files", "*.*")])
+            if path_:
+                self._v_rbe_path.set(path_)
+
+        self._btn(file_row, "…", _browse_rbe, w=4,
+                  color=T["accent2"]).pack(side="left", padx=(6, 0))
+
+        # ── Scale ────────────────────────────────────────────────────────────
+        self._sec(p, "Scale (Quake units per block)")
+        sc_row = ttk.Frame(p, style="P.TFrame")
+        sc_row.pack(fill="x", pady=(0, 8))
+        # dbt X→Q X (48), dbt Z→Q Y (48), dbt Y→Q Z (42)
+        self._v_rbe_sx = tk.IntVar(value=48)
+        self._v_rbe_sy = tk.IntVar(value=48)
+        self._v_rbe_sz = tk.IntVar(value=42)
+        for lbl, var in [("X:", self._v_rbe_sx),
+                          ("Y:", self._v_rbe_sy),
+                          ("Z (height):", self._v_rbe_sz)]:
+            ttk.Label(sc_row, text=lbl, style="P.TLabel").pack(side="left")
+            self._spinbox(sc_row, var, 1, 512, 1, pack=False).pack(
+                side="left", padx=(2, 12))
+
+        # ── Actions ──────────────────────────────────────────────────────────
+        self._sec(p, "Actions")
+        self._btn(p, "Import & Convert",
+                  self._on_import_rbe,
+                  color=T["accent"],
+                  font=("Segoe UI", 11, "bold")).pack(fill="x", pady=(0, 8))
+
+    # ─ RBE parsing ─────────────────────────────────────────────────────────
+    @staticmethod
+    def _parse_rbe(filepath):
+        """Parse a Diabotical .rbe map file.
+
+        Returns (blocks, materials, entities, ver) where:
+          blocks   — list of dicts: x,y,z (grid ints), type (uint8), mats dict, orient
+          materials— list of strings, index 0 is "default"
+          entities — list of dicts: name, x,y,z (floats), properties list
+          ver      — format version int
+        """
+        import struct, gzip as gz
+
+        def ri(f, n=4):
+            return int.from_bytes(f.read(n), "little", signed=True)
+
+        def rf(f):
+            return struct.unpack('<f', f.read(4))[0]
+
+        with open(filepath, 'rb') as raw:
+            raw.read(4)          # magic 'REBM'
+            ver      = ri(raw)
+            ri(raw)              # u1
+            ri(raw)              # padding1
+
+            if ver > 21:
+                author_len = ri(raw)
+                raw.read(author_len)   # author name
+                raw.read(8)            # padding2
+                f = gz.GzipFile(fileobj=raw)
+            else:
+                f = raw
+
+            mat_count = ri(f, 1)
+            materials = ["default"]
+            for _ in range(mat_count - 1):
+                c = ri(f, 4)
+                materials.append(f.read(c).decode("utf-8"))
+
+            ri(f, 4)  # u2
+            block_count = ri(f, 4)
+            blocks = []
+            for _ in range(block_count):
+                b = {
+                    "x":    ri(f, 4),
+                    "y":    ri(f, 4),
+                    "z":    ri(f, 4),
+                    "type": ri(f, 1),
+                }
+                f.read(12)  # u1 (unknown)
+                b["mats"] = {
+                    "front":  ri(f, 1),
+                    "left":   ri(f, 1),
+                    "back":   ri(f, 1),
+                    "right":  ri(f, 1),
+                    "top":    ri(f, 1),
+                    "bottom": ri(f, 1),
+                }
+                f.read(1)   # u2
+                f.read(12)  # mat_offs (sprite sheet offsets, unused here)
+                if ver > 24:
+                    f.read(6)
+                    b["orient"] = ri(f, 1)
+                    f.read(2)
+                else:
+                    b["orient"] = ri(f, 1)
+                    f.read(1)
+                blocks.append(b)
+
+            # skip u3 section
+            u3_count = ri(f, 4)
+            for _ in range(u3_count):
+                f.read(16)
+
+            entity_count = ri(f, 4)
+            entities = []
+            for _ in range(entity_count):
+                c = ri(f, 4)
+                e = {
+                    "name":   f.read(c).decode("utf-8"),
+                    "x":      rf(f), "y": rf(f), "z": rf(f),
+                    "xrot":   rf(f), "yrot": rf(f), "zrot": rf(f),
+                    "xscale": rf(f), "yscale": rf(f), "zscale": rf(f),
+                }
+                prop_count = ri(f, 4)
+                e["properties"] = []
+                for _ in range(prop_count):
+                    c = ri(f, 4)
+                    name = f.read(c).decode("utf-8")
+                    c = ri(f, 4)
+                    val = f.read(c).decode("utf-8")
+                    e["properties"].append({"name": name, "val": val})
+                entities.append(e)
+
+        return blocks, materials, entities, ver
+
+    # ─ Greedy merge ────────────────────────────────────────────────────────
+    @staticmethod
+    def _greedy_merge(blocks):
+        """Merge adjacent blocks into axis-aligned boxes (greedy meshing).
+
+        Coordinate note: in Diabotical, Y is up. Blocks are on integer grid.
+        Returns list of (x1,y1,z1, x2,y2,z2) where each value is exclusive-max
+        in dbt grid coords (so a single block at pos P has x2=P.x+1 etc.).
+        """
+        bset = {(b["x"], b["y"], b["z"]) for b in blocks}
+        visited = set()
+        merged = []
+
+        for (bx, by, bz) in sorted(bset):
+            if (bx, by, bz) in visited:
+                continue
+
+            # Expand along X (dbt X → Quake X)
+            x2 = bx
+            while (x2 + 1, by, bz) in bset and (x2 + 1, by, bz) not in visited:
+                x2 += 1
+
+            # Expand along Z (dbt Z → Quake Y)
+            z2 = bz
+            while all(
+                (xi, by, z2 + 1) in bset and (xi, by, z2 + 1) not in visited
+                for xi in range(bx, x2 + 1)
+            ):
+                z2 += 1
+
+            # Expand along Y (dbt Y = up → Quake Z)
+            y2 = by
+            while all(
+                (xi, y2 + 1, zi) in bset and (xi, y2 + 1, zi) not in visited
+                for xi in range(bx, x2 + 1)
+                for zi in range(bz, z2 + 1)
+            ):
+                y2 += 1
+
+            # Mark the whole merged box as visited
+            for xi in range(bx, x2 + 1):
+                for yi in range(by, y2 + 1):
+                    for zi in range(bz, z2 + 1):
+                        visited.add((xi, yi, zi))
+
+            merged.append((bx, by, bz, x2 + 1, y2 + 1, z2 + 1))
+
+        return merged
+
+    # ─ Corner block conversion ─────────────────────────────────────────────
+    @staticmethod
+    def _merge_corners(blocks):
+        """Group type-3 corner blocks by (x,z,orient) and merge contiguous Y runs.
+
+        Returns list of (bx, bz, by_lo, by_hi_excl, orient) tuples.
+        by_lo/by_hi are DBT Y grid indices (by_hi exclusive).
+        """
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for b in blocks:
+            groups[(b["x"], b["z"], b.get("orient", 0))].append(b["y"])
+
+        result = []
+        for (bx, bz, orient), ys in groups.items():
+            ys_sorted = sorted(set(ys))
+            run_start = ys_sorted[0]
+            run_end   = ys_sorted[0]
+            for y in ys_sorted[1:]:
+                if y == run_end + 1:
+                    run_end = y
+                else:
+                    result.append((bx, bz, run_start, run_end + 1, orient))
+                    run_start = run_end = y
+            result.append((bx, bz, run_start, run_end + 1, orient))
+        return result
+
+    @staticmethod
+    def _corner_brush(bx, bz, by_lo, by_hi, orient, sx, sy, sz, tex):
+        """Generate a 5-face pentahedron brush for a merged DBT corner block group.
+
+        Geometry derived from Diabotical's faces.zig plane definitions (all in
+        Quake coords: dbt.X→Q.X, dbt.Z→Q.Y, dbt.Y→Q.Z).  Corner slabs are
+        half-height (sz/2 per slab); when N slabs are merged the brush spans
+        N×(sz/2) vertically, filling any intra-slab gaps for simplicity.
+
+        Orientations (Zig enum: 0=lf_fw,1=lf_bk,2=rt_bk,3=rt_fw):
+          0 → right angle at (qx2,qy1): triangle (qx1,qy1)-(qx2,qy1)-(qx2,qy2)
+          1 → right angle at (qx2,qy2): triangle (qx2,qy1)-(qx2,qy2)-(qx1,qy2)
+          2 → right angle at (qx1,qy2): triangle (qx1,qy1)-(qx1,qy2)-(qx2,qy2)
+          3 → right angle at (qx1,qy1): triangle (qx1,qy1)-(qx2,qy1)-(qx1,qy2)
+        """
+        qx1, qx2 = bx * sx, (bx + 1) * sx
+        qy1, qy2 = bz * sy, (bz + 1) * sy
+        n_slabs  = by_hi - by_lo
+        qz_bot   = by_lo * sz
+        qz_top   = qz_bot + n_slabs * sz
+
+        # Bottom: inward normal +Z (solid above)
+        f_bot = face((qx1,qy1,qz_bot),(qx2,qy1,qz_bot),(qx1,qy2,qz_bot), tex)
+        # Top: inward normal -Z (solid below)
+        f_top = face((qx2,qy2,qz_top),(qx2,qy1,qz_top),(qx1,qy1,qz_top), tex)
+
+        if orient == 0:
+            # Walls: x=qx2 (-X) and y=qy1 (+Y)
+            f_w1  = face((qx2,qy2,qz_top),(qx2,qy2,qz_bot),(qx2,qy1,qz_top), tex)
+            f_w2  = face((qx1,qy1,qz_bot),(qx1,qy1,qz_top),(qx2,qy1,qz_bot), tex)
+            # Diagonal plane: normal (sy,-sx,0) from faces.zig lf_fw
+            f_dia = face((qx2,qy2,qz_top),(qx1,qy1,qz_top+1),(qx1,qy1,qz_top), tex)
+        elif orient == 1:
+            # Walls: x=qx2 (-X) and y=qy2 (-Y)
+            f_w1  = face((qx2,qy2,qz_top),(qx2,qy2,qz_bot),(qx2,qy1,qz_top), tex)
+            f_w2  = face((qx2,qy2,qz_top),(qx1,qy2,qz_top),(qx2,qy2,qz_bot), tex)
+            # Diagonal plane: normal (sy,sx,0) from faces.zig lf_bk
+            f_dia = face((qx1,qy2,qz_top),(qx2,qy1,qz_top+1),(qx2,qy1,qz_top), tex)
+        elif orient == 2:
+            # Walls: x=qx1 (+X) and y=qy2 (-Y)
+            f_w1  = face((qx1,qy1,qz_bot),(qx1,qy2,qz_bot),(qx1,qy1,qz_top), tex)
+            f_w2  = face((qx2,qy2,qz_top),(qx1,qy2,qz_top),(qx2,qy2,qz_bot), tex)
+            # Diagonal plane: normal (-sy,sx,0) from faces.zig rt_bk
+            f_dia = face((qx1,qy1,qz_top),(qx2,qy2,qz_top+1),(qx2,qy2,qz_top), tex)
+        else:  # orient == 3
+            # Walls: x=qx1 (+X) and y=qy1 (+Y)
+            f_w1  = face((qx1,qy1,qz_bot),(qx1,qy2,qz_bot),(qx1,qy1,qz_top), tex)
+            f_w2  = face((qx1,qy1,qz_bot),(qx1,qy1,qz_top),(qx2,qy1,qz_bot), tex)
+            # Diagonal plane: normal (-sy,-sx,0) from faces.zig rt_fw
+            f_dia = face((qx1,qy2,qz_top),(qx2,qy1,qz_top),(qx2,qy1,qz_top+1), tex)
+
+        return write_brush([f_bot, f_top, f_w1, f_w2, f_dia],
+                           f"corner o{orient}")
+
+    # ─ Cylinder brush generation ──────────────────────────────────────────
+    @staticmethod
+    def _cylinder_brushes(cx, cy, z_bot, z_top, inner_r, outer_r,
+                          angle_start, angle_end, step_qu, tex):
+        """Generate brushes approximating a hollow cylinder wall arc.
+
+        Returns list of brush strings (to be placed inside a func_detail entity).
+        cx,cy     — center of curvature in Quake XY
+        z_bot/top — vertical extent in Quake Z
+        inner_r/outer_r — wall radii in Quake units
+        angle_start/end — arc in radians (counterclockwise in Quake XY)
+        step_qu   — target arc-length per segment in Quake units
+        """
+        import math
+        arc_len = abs(angle_end - angle_start) * (inner_r + outer_r) / 2
+        n_seg = max(1, round(arc_len / step_qu))
+        da = (angle_end - angle_start) / n_seg
+        brushes = []
+
+        for i in range(n_seg):
+            a0 = angle_start + i * da
+            a1 = angle_start + (i + 1) * da
+            ca0, sa0 = math.cos(a0), math.sin(a0)
+            ca1, sa1 = math.cos(a1), math.sin(a1)
+
+            # 8 vertices: inner/outer × angle0/angle1 × bot/top
+            ix0, iy0 = cx + inner_r * ca0, cy + inner_r * sa0
+            ix1, iy1 = cx + inner_r * ca1, cy + inner_r * sa1
+            ox0, oy0 = cx + outer_r * ca0, cy + outer_r * sa0
+            ox1, oy1 = cx + outer_r * ca1, cy + outer_r * sa1
+            zb, zt = z_bot, z_top
+
+            # 6 faces with inward-pointing normals (verified analytically)
+            A = (ix0, iy0, zb)  # inner-a0-bot
+            B = (ix1, iy1, zb)  # inner-a1-bot
+            C = (ox0, oy0, zb)  # outer-a0-bot
+            D = (ox1, oy1, zb)  # outer-a1-bot
+            E = (ix0, iy0, zt)  # inner-a0-top
+            F = (ix1, iy1, zt)  # inner-a1-top
+            G = (ox0, oy0, zt)  # outer-a0-top
+            H = (ox1, oy1, zt)  # outer-a1-top
+
+            f_bot   = face(A, C, B, tex)  # +Z  (bottom, solid above)
+            f_top   = face(F, G, E, tex)  # -Z  (top, solid below)
+            f_inner = face(A, B, E, tex)  # outward radial
+            f_outer = face(C, G, D, tex)  # inward radial
+            f_side0 = face(C, G, A, tex)  # -angular (backward)
+            f_side1 = face(B, H, D, tex)  # +angular (forward)
+
+            brushes.append(write_brush(
+                [f_bot, f_top, f_inner, f_outer, f_side0, f_side1],
+                f"cyl_seg {i}"))
+
+        return brushes
+
+    # ─ Entity conversion ───────────────────────────────────────────────────
+    @staticmethod
+    def _rbe_entities_to_map(entities, sx, sy, sz, opaque_tex="turnt/turnt_concrete"):
+        """Convert Diabotical entities to Quake .map entity strings.
+
+        Handles:
+          spawn            → info_player_start (entity)
+          trigger_start    → trigger_multiple + target_startTimer (entity)
+          trigger_end      → trigger_multiple + target_stopTimer (entity)
+          trigger_split*   → trigger_multiple + target_checkpoint_N (entity)
+          prop brushes     → worldspawn brushes (box, pentahedron, cylinder)
+
+        Returns (worldspawn_brushes, entity_lines):
+          worldspawn_brushes — list of brush strings to insert inside worldspawn
+          entity_lines       — list of entity definition strings (outside worldspawn)
+
+        Entity positions are in Diabotical world units.
+        Horizontal: 40 dbt units = 1 block.  Vertical (Y): 20 dbt units = 1 block.
+        Axis mapping: dbt X→Q X, dbt Z→Q Y, dbt Y→Q Z.
+        Trigger scale = full extent in dbt units (divide by 2 for half-extent).
+        Prop scale: multiplier where 1.0 × 40 dbt units = full extent per axis.
+        """
+        EFX = sx / 40.0  # entity factor: dbt world unit → Quake X
+        EFY = sy / 40.0  # entity factor: dbt world unit → Quake Y (dbt Z axis)
+        EFZ = sz / 20.0  # entity factor: dbt world unit → Quake Z (dbt Y up, 20u/block)
+        MIN_HALF = 8.0   # minimum brush half-extent in Quake units
+        TRIG_TEX = "common/trigger"
+        SL = 8           # slab thickness for point entities
+
+        lines = []           # entity definitions (outside worldspawn)
+        brushes = []         # raw brush strings (inside worldspawn)
+        split_count = 0      # counter for checkpoint numbering
+
+        for e in entities:
+            nm  = e["name"]
+            # Convert position (dbt world units → Quake coords)
+            qx = e["x"] * EFX
+            qy = e["z"] * EFY   # dbt Z → Quake Y
+            qz = e["y"] * EFZ   # dbt Y → Quake Z
+            props = {p["name"]: p["val"] for p in e.get("properties", [])}
+
+            if nm == "spawn":
+                lines += [
+                    "{",
+                    '"classname" "info_player_start"',
+                    f'"origin" "{qx:g} {qy:g} {qz:g}"',
+                    '"angle" "0"',
+                    "}",
+                ]
+
+            elif nm.startswith("trigger_start"):
+                # ── Start timer trigger ───────────────────────────────────
+                # Brush entity: trigger_multiple targeting target_startTimer
+                hx = max(MIN_HALF, abs(e["xscale"]) * EFX / 2.0)
+                hy = max(MIN_HALF, abs(e["zscale"]) * EFY / 2.0)
+                hz = max(MIN_HALF, abs(e["yscale"]) * EFZ / 2.0)
+                fs = box_faces(
+                    qx - hx, qy - hy, qz - hz,
+                    qx + hx, qy + hy, qz + hz,
+                    TRIG_TEX, TRIG_TEX, TRIG_TEX,
+                    TRIG_TEX, TRIG_TEX, TRIG_TEX,
+                )
+                lines += [
+                    "{",
+                    '"classname" "trigger_multiple"',
+                    '"target" "target_startTimer"',
+                    write_brush(fs, f"trigger {nm}"),
+                    "}",
+                ]
+                # Point entity: target_startTimer
+                lines += [
+                    "{",
+                    '"classname" "target_startTimer"',
+                    f'"origin" "{qx:g} {qy:g} {qz:g}"',
+                    '"targetname" "target_startTimer"',
+                    "}",
+                ]
+
+            elif nm.startswith("trigger_end"):
+                # ── Stop timer trigger ────────────────────────────────────
+                hx = max(MIN_HALF, abs(e["xscale"]) * EFX / 2.0)
+                hy = max(MIN_HALF, abs(e["zscale"]) * EFY / 2.0)
+                hz = max(MIN_HALF, abs(e["yscale"]) * EFZ / 2.0)
+                fs = box_faces(
+                    qx - hx, qy - hy, qz - hz,
+                    qx + hx, qy + hy, qz + hz,
+                    TRIG_TEX, TRIG_TEX, TRIG_TEX,
+                    TRIG_TEX, TRIG_TEX, TRIG_TEX,
+                )
+                lines += [
+                    "{",
+                    '"classname" "trigger_multiple"',
+                    '"target" "target_stopTimer"',
+                    write_brush(fs, f"trigger {nm}"),
+                    "}",
+                ]
+                # Point entity: target_stopTimer
+                lines += [
+                    "{",
+                    '"classname" "target_stopTimer"',
+                    f'"origin" "{qx:g} {qy:g} {qz:g}"',
+                    '"targetname" "target_stopTimer"',
+                    "}",
+                ]
+
+            elif nm.startswith("trigger_split"):
+                # ── Checkpoint trigger ────────────────────────────────────
+                split_count += 1
+                tname = f"target_checkpoint_{split_count}"
+                hx = max(MIN_HALF, abs(e["xscale"]) * EFX / 2.0)
+                hy = max(MIN_HALF, abs(e["zscale"]) * EFY / 2.0)
+                hz = max(MIN_HALF, abs(e["yscale"]) * EFZ / 2.0)
+                fs = box_faces(
+                    qx - hx, qy - hy, qz - hz,
+                    qx + hx, qy + hy, qz + hz,
+                    TRIG_TEX, TRIG_TEX, TRIG_TEX,
+                    TRIG_TEX, TRIG_TEX, TRIG_TEX,
+                )
+                lines += [
+                    "{",
+                    '"classname" "trigger_multiple"',
+                    f'"target" "{tname}"',
+                    write_brush(fs, f"trigger {nm}"),
+                    "}",
+                ]
+                # Point entity: target_checkpoint
+                lines += [
+                    "{",
+                    '"classname" "target_checkpoint"',
+                    f'"origin" "{qx:g} {qy:g} {qz:g}"',
+                    f'"targetname" "{tname}"',
+                    f'"count" "{split_count}"',
+                    "}",
+                ]
+
+            else:
+                # ── Prop entities (detected via 'model' property) ─────────
+                model = props.get("model", "").lower()
+
+                # Determine prop type and texture
+                prop_tex = None
+                prop_shape = None  # "box", "corner", "diagonal", "cylinder"
+                if "invisible_cylinder" in model:
+                    prop_tex = "common/caulk"
+                    prop_shape = "cylinder"
+                elif "invisible_block_diagonal" in model:
+                    prop_tex = "common/caulk"
+                    prop_shape = "diagonal"
+                elif "invisible_opaque_box_corner" in model:
+                    prop_tex = opaque_tex
+                    prop_shape = "corner"
+                elif "invisible_opaque_box" in model:
+                    prop_tex = opaque_tex
+                    prop_shape = "box"
+                elif "invisible_box" in model:
+                    prop_tex = NODRAW_TEX
+                    prop_shape = "box"
+
+                if prop_shape is None:
+                    continue  # unknown entity type, skip
+
+                import math
+                # Prop full extent: scale × 40 dbt units → quake via EF
+                # Horizontal: scale * 40 * EFX = scale * sx
+                # Vertical:   scale * 40 * EFZ = scale * 2 * sz  (20 dbt/block)
+                fx = max(MIN_HALF, abs(e.get("xscale", 1.0)) * sx)
+                fy = max(MIN_HALF, abs(e.get("zscale", 1.0)) * sy)
+                fz = max(MIN_HALF, abs(e.get("yscale", 1.0)) * 2 * sz)
+
+                if prop_shape == "box":
+                    # Box brush centered on entity position
+                    hx, hy, hz = fx / 2, fy / 2, fz / 2
+                    fs = box_faces(
+                        qx - hx, qy - hy, qz - hz,
+                        qx + hx, qy + hy, qz + hz,
+                        prop_tex, prop_tex, prop_tex,
+                        prop_tex, prop_tex, prop_tex)
+                    brushes.append(write_brush(fs, f"prop_box {nm}"))
+
+                elif prop_shape == "diagonal":
+                    # Diagonal prop → 5-face pentahedron (vertical cut)
+                    # XYZ = sharp corner of the right triangle (viewed from above)
+                    # yrot determines which direction the brush extends from sharp corner
+                    ang = e.get("yrot", 0.0) % (2 * math.pi)
+
+                    # Compute bounding box from sharp corner
+                    # Direction of extension depends on yrot
+                    if ang < math.pi / 4 or ang >= 7 * math.pi / 4:
+                        # ≈0°: orient 0 — right angle at (+X, -Y) from sharp corner
+                        x0, x1 = qx, qx + fx
+                        y0, y1 = qy - fy, qy
+                        z0, z1 = qz, qz + fz
+                        # Triangle from above: sharp at (x0,y1), right-angle at (x1,y0)
+                        f_bot = face((x0,y0,z0),(x1,y0,z0),(x0,y1,z0), prop_tex)
+                        f_top = face((x1,y1,z1),(x1,y0,z1),(x0,y0,z1), prop_tex)
+                        f_w1  = face((x1,y0,z1),(x1,y0,z0),(x1,y1,z1), prop_tex)
+                        f_w2  = face((x0,y0,z0),(x0,y0,z1),(x1,y0,z0), prop_tex)
+                        f_dia = face((x1,y1,z1),(x0,y0,z1+1),(x0,y0,z1), prop_tex)
+                    elif ang < 3 * math.pi / 4:
+                        # ≈90°: orient 1 — right angle at (+X, +Y) from sharp corner
+                        x0, x1 = qx, qx + fx
+                        y0, y1 = qy, qy + fy
+                        z0, z1 = qz, qz + fz
+                        f_bot = face((x0,y0,z0),(x1,y0,z0),(x0,y1,z0), prop_tex)
+                        f_top = face((x1,y1,z1),(x1,y0,z1),(x0,y0,z1), prop_tex)
+                        f_w1  = face((x1,y1,z1),(x1,y1,z0),(x1,y0,z1), prop_tex)
+                        f_w2  = face((x1,y1,z1),(x0,y1,z1),(x1,y1,z0), prop_tex)
+                        f_dia = face((x0,y1,z1),(x1,y0,z1+1),(x1,y0,z1), prop_tex)
+                    elif ang < 5 * math.pi / 4:
+                        # ≈180°: orient 2 — right angle at (-X, +Y) from sharp corner
+                        x0, x1 = qx - fx, qx
+                        y0, y1 = qy, qy + fy
+                        z0, z1 = qz, qz + fz
+                        f_bot = face((x0,y0,z0),(x1,y0,z0),(x0,y1,z0), prop_tex)
+                        f_top = face((x1,y1,z1),(x1,y0,z1),(x0,y0,z1), prop_tex)
+                        f_w1  = face((x0,y0,z0),(x0,y1,z0),(x0,y0,z1), prop_tex)
+                        f_w2  = face((x1,y1,z1),(x0,y1,z1),(x1,y1,z0), prop_tex)
+                        f_dia = face((x0,y0,z1),(x1,y1,z1+1),(x1,y1,z1), prop_tex)
+                    else:
+                        # ≈270°: orient 3 — right angle at (-X, -Y) from sharp corner
+                        x0, x1 = qx - fx, qx
+                        y0, y1 = qy - fy, qy
+                        z0, z1 = qz, qz + fz
+                        f_bot = face((x0,y0,z0),(x1,y0,z0),(x0,y1,z0), prop_tex)
+                        f_top = face((x1,y1,z1),(x1,y0,z1),(x0,y0,z1), prop_tex)
+                        f_w1  = face((x0,y0,z0),(x0,y1,z0),(x0,y0,z1), prop_tex)
+                        f_w2  = face((x0,y0,z0),(x0,y0,z1),(x1,y0,z0), prop_tex)
+                        f_dia = face((x0,y1,z1),(x1,y0,z1),(x1,y0,z1+1), prop_tex)
+
+                    brushes.append(write_brush(
+                        [f_bot, f_top, f_w1, f_w2, f_dia],
+                        f"diag_prop {nm}"))
+
+                elif prop_shape == "corner":
+                    # Opaque corner prop → 5-face pentahedron
+                    # Same geometry as diagonal but with turnt texture
+                    ang = e.get("yrot", 0.0) % (2 * math.pi)
+                    hx, hy, hz = fx / 2, fy / 2, fz / 2
+                    x0, x1 = qx - hx, qx + hx
+                    y0, y1 = qy - hy, qy + hy
+                    z0, z1 = qz - hz, qz + hz
+
+                    f_bot = face((x0,y0,z0),(x1,y0,z0),(x0,y1,z0), prop_tex)
+                    f_top = face((x1,y1,z1),(x1,y0,z1),(x0,y0,z1), prop_tex)
+
+                    if ang < math.pi / 4 or ang >= 7 * math.pi / 4:
+                        f_w1  = face((x1,y1,z1),(x1,y1,z0),(x1,y0,z1), prop_tex)
+                        f_w2  = face((x0,y0,z0),(x0,y0,z1),(x1,y0,z0), prop_tex)
+                        f_dia = face((x1,y1,z1),(x0,y0,z1+1),(x0,y0,z1), prop_tex)
+                    elif ang < 3 * math.pi / 4:
+                        f_w1  = face((x1,y1,z1),(x1,y1,z0),(x1,y0,z1), prop_tex)
+                        f_w2  = face((x1,y1,z1),(x0,y1,z1),(x1,y1,z0), prop_tex)
+                        f_dia = face((x0,y1,z1),(x1,y0,z1+1),(x1,y0,z1), prop_tex)
+                    elif ang < 5 * math.pi / 4:
+                        f_w1  = face((x0,y0,z0),(x0,y1,z0),(x0,y0,z1), prop_tex)
+                        f_w2  = face((x1,y1,z1),(x0,y1,z1),(x1,y1,z0), prop_tex)
+                        f_dia = face((x0,y0,z1),(x1,y1,z1+1),(x1,y1,z1), prop_tex)
+                    else:
+                        f_w1  = face((x0,y0,z0),(x0,y1,z0),(x0,y0,z1), prop_tex)
+                        f_w2  = face((x0,y0,z0),(x0,y0,z1),(x1,y0,z0), prop_tex)
+                        f_dia = face((x0,y1,z1),(x1,y0,z1),(x1,y0,z1+1), prop_tex)
+
+                    brushes.append(write_brush(
+                        [f_bot, f_top, f_w1, f_w2, f_dia],
+                        f"corner_prop {nm}"))
+
+                elif prop_shape == "cylinder":
+                    # Curved wall → multiple trapezoidal brushes
+                    # XYZ = center of curvature (confirmed by user)
+                    # Quarter circle (90°), yrot sets start angle
+                    ang = e.get("yrot", 0.0)  # start angle in radians
+
+                    # Radius from scale (scale 1 = ~4 blocks outer)
+                    outer_r = max(MIN_HALF, abs(e.get("xscale", 1.0)) * sx * 4)
+                    wall_t  = sx / 2.0  # wall thickness = half a block
+                    inner_r = outer_r - wall_t
+                    z_bot = qz - fz / 2
+                    z_top = qz + fz / 2
+                    arc_step = float(sx)  # ~48 quake units per segment
+
+                    cyl_strs = App._cylinder_brushes(
+                        qx, qy, z_bot, z_top,
+                        inner_r, outer_r,
+                        ang, ang + math.pi / 2,
+                        arc_step, prop_tex)
+                    brushes.extend(cyl_strs)
+
+        return brushes, lines
+
+    # ─ Map string builder ──────────────────────────────────────────────────
+    @staticmethod
+    def _rbe_to_map_string(merged_with_mat, mat_tex, sx, sy, sz,
+                           corner_brushes=None,
+                           prop_brushes=None, entity_lines=None):
+        """Convert greedy-merged dbt boxes to Quake .map format.
+
+        merged_with_mat — list of (x1,y1,z1, x2,y2,z2, mat_idx) in dbt grid coords.
+        mat_tex         — dict mapping mat_idx → texture name string.
+        corner_brushes  — list of pre-built brush strings for corner blocks.
+        prop_brushes    — list of brush strings from prop entities (worldspawn geometry).
+        entity_lines    — list of entity strings (spawn, triggers — outside worldspawn).
+        """
+        lines = [
+            "// Turnt-o-mapper — DBT Import",
+            "{",
+            '"classname" "worldspawn"',
+        ]
+        for bi, (x1, y1, z1, x2, y2, z2, mat_idx) in enumerate(merged_with_mat):
+            qx1, qx2 = x1 * sx, x2 * sx
+            qy1, qy2 = z1 * sy, z2 * sy   # dbt Z → Quake Y
+            qz1, qz2 = y1 * sz, y2 * sz   # dbt Y → Quake Z
+            tex = mat_tex.get(mat_idx, "turnt/turnt_concrete")
+            fs = box_faces(qx1, qy1, qz1, qx2, qy2, qz2,
+                           tex, tex, tex, tex, tex, tex)
+            lines.append(write_brush(fs, f"dbt {bi}"))
+        if corner_brushes:
+            lines.extend(corner_brushes)
+        if prop_brushes:
+            lines.extend(prop_brushes)
+        lines.append("}")
+        if entity_lines:
+            lines.extend(entity_lines)
+        return "\n".join(lines)
+
+    # ─ Import orchestration ─────────────────────────────────────────────────
+    def _on_import_rbe(self):
+        # Turnt textures pool for automatic material→texture mapping
+        _TURNT_POOL = [k for k in ALL_TEXTURES if k.startswith("turnt/turnt_")]
+
+        def run():
+            path = self._v_rbe_path.get().strip()
+            if not path:
+                self._log("No file selected.", "error")
+                return
+
+            sx = self._v_rbe_sx.get()
+            sy = self._v_rbe_sy.get()
+            sz = self._v_rbe_sz.get()
+
+            try:
+                # 1. Parse
+                self._log(f"Parsing {path} …", "info")
+                t0 = time.perf_counter()
+                blocks, materials, entities, ver = self._parse_rbe(path)
+                dt = time.perf_counter() - t0
+                self._log(
+                    f"Parsed ver={ver}: {len(blocks):,} blocks, "
+                    f"{len(materials)} materials, {len(entities)} entities "
+                    f"in {dt:.2f}s", "info")
+
+                # 2. Filter by type
+                # Block type → texture mapping for clip types
+                CLIP_TEX = {
+                    2: "common/caulk",       # Full clip (invisible solid)
+                    4: "common/weapclip",    # Weapon clip
+                    5: "common/playerclip",  # Player clip
+                }
+                solid_blocks  = [b for b in blocks if b["type"] == 1]
+                corner_blocks = [b for b in blocks if b["type"] == 3]
+                clip_groups   = {t: [b for b in blocks if b["type"] == t]
+                                 for t in (2, 4, 5)}
+                clip_info = ", ".join(
+                    f"{len(v):,} type-{k}" for k, v in clip_groups.items() if v)
+                self._log(
+                    f"Filtered: {len(solid_blocks):,} solid, "
+                    f"{len(corner_blocks):,} corner"
+                    + (f", {clip_info}" if clip_info else ""))
+
+                # 3. Build material→texture mapping from unique top-face materials
+                mat_groups: Dict[int, list] = {}
+                for b in solid_blocks:
+                    m = b["mats"]["top"]
+                    mat_groups.setdefault(m, []).append(b)
+
+                mat_tex: Dict[int, str] = {}
+                self._log("Material → texture mapping:")
+                for pool_i, m_idx in enumerate(sorted(mat_groups.keys())):
+                    tex = _TURNT_POOL[pool_i % len(_TURNT_POOL)]
+                    mat_tex[m_idx] = tex
+                    mat_name = (materials[m_idx]
+                                if m_idx < len(materials) else "?")
+                    self._log(
+                        f"  [{m_idx}] {mat_name!r} → {tex!r}")
+
+                # 4. Per-material greedy merge (solid blocks)
+                self._log(
+                    f"Merging {len(mat_groups)} material groups …")
+                t0 = time.perf_counter()
+                merged_with_mat = []   # (x1,y1,z1,x2,y2,z2,mat_idx)
+                for m_idx, group in mat_groups.items():
+                    for box in self._greedy_merge(group):
+                        merged_with_mat.append((*box, m_idx))
+                dt = time.perf_counter() - t0
+                self._log(
+                    f"Merged {len(solid_blocks):,} solid → "
+                    f"{len(merged_with_mat):,} brushes in {dt:.2f}s", "info")
+
+                # 4a. Clip block types (2, 4, 5) — merge with fixed texture
+                for btype, btype_blocks in clip_groups.items():
+                    if not btype_blocks:
+                        continue
+                    tex = CLIP_TEX[btype]
+                    t0 = time.perf_counter()
+                    clip_merged = self._greedy_merge(btype_blocks)
+                    dt = time.perf_counter() - t0
+                    synth_idx = -btype  # negative index to avoid collision
+                    mat_tex[synth_idx] = tex
+                    for box in clip_merged:
+                        merged_with_mat.append((*box, synth_idx))
+                    self._log(
+                        f"Type {btype}: {len(btype_blocks):,} → "
+                        f"{len(clip_merged):,} brushes ({tex}) in {dt:.2f}s",
+                        "info")
+
+                # 4b. Corner block conversion (type 3 → pentahedron brushes)
+                corner_tex = (_TURNT_POOL[len(mat_groups) % len(_TURNT_POOL)]
+                              if _TURNT_POOL else "turnt/turnt_concrete")
+                t0 = time.perf_counter()
+                corner_runs = self._merge_corners(corner_blocks)
+                corner_brush_strs = [
+                    self._corner_brush(bx, bz, by_lo, by_hi, orient,
+                                       sx, sy, sz, corner_tex)
+                    for (bx, bz, by_lo, by_hi, orient) in corner_runs
+                ]
+                dt = time.perf_counter() - t0
+                self._log(
+                    f"Corner: {len(corner_blocks):,} slabs → "
+                    f"{len(corner_brush_strs):,} brushes in {dt:.2f}s", "info")
+
+                # 5. Entity conversion
+                # Pick a distinct turnt texture for opaque props
+                opaque_prop_tex = (_TURNT_POOL[
+                    (len(mat_groups) + 1) % len(_TURNT_POOL)]
+                    if _TURNT_POOL else "turnt/turnt_concrete")
+                prop_brushes, entity_lines = self._rbe_entities_to_map(
+                    entities, sx, sy, sz, opaque_tex=opaque_prop_tex)
+                n_spawns   = sum(1 for e in entities if e["name"] == "spawn")
+                n_triggers = sum(1 for e in entities
+                                 if e["name"].startswith("trigger_"))
+                # Count prop entities by model type
+                def _model(ent):
+                    for p in ent.get("properties", []):
+                        if p["name"] == "model":
+                            return p["val"].lower()
+                    return ""
+                n_props = sum(1 for e in entities
+                              if "invisible" in _model(e))
+                self._log(
+                    f"Entities: {n_spawns} spawn, "
+                    f"{n_triggers} triggers, {n_props} props")
+
+                # 6. Generate .map string
+                self._log("Generating .map …")
+                t0 = time.perf_counter()
+                ms = self._rbe_to_map_string(
+                    merged_with_mat, mat_tex, sx, sy, sz,
+                    corner_brushes=corner_brush_strs,
+                    prop_brushes=prop_brushes,
+                    entity_lines=entity_lines)
+                dt = time.perf_counter() - t0
+                kb = len(ms.encode()) / 1024
+                total_brushes = (len(merged_with_mat)
+                                 + len(corner_brush_strs)
+                                 + len(prop_brushes))
+                self._log(
+                    f"Map: {total_brushes:,} brushes "
+                    f"({len(merged_with_mat):,} solid + {len(corner_brush_strs):,} corner), "
+                    f"{kb:.1f} KB in {dt:.2f}s", "info")
+
+                self._map_str = ms
+
+                # 7. Update previews with fake Room objects (Quake coords)
+                fake_rooms = [
+                    Room(
+                        x=x1 * sx, y=z1 * sy, z=y1 * sz,
+                        w=max(1, (x2 - x1) * sx),
+                        d=max(1, (z2 - z1) * sy),
+                        h=max(1, (y2 - y1) * sz),
+                        idx=i,
+                    )
+                    for i, (x1, y1, z1, x2, y2, z2, _mi)
+                    in enumerate(merged_with_mat)
+                ]
+                self._rooms   = fake_rooms
+                self._bridges = []
+                self._is_rbe_import = True
+                self.after(0, self._redraw)
+                self.after(0, lambda r=fake_rooms:
+                           self._viewer3d.load(r, [], show_labels=False))
+
+                self._log(
+                    "Done! Preview updated. Use 'Save .map' to write the file.",
+                    "info")
+
+            except Exception as ex:
+                import traceback; traceback.print_exc()
+                self._log(f"Error: {ex}", "error")
+
+        threading.Thread(target=run, daemon=True).start()
 
     # ── RIGHT PANEL ───────────────────────────────────────────────────────────
     def _build_right(self, p):
@@ -2572,7 +3503,10 @@ class App(tk.Tk):
         """Refresh 3D viewer when its tab is activated."""
         try:
             if nb.tab(nb.select(), "text").strip() == "3D" and self._rooms:
-                self._viewer3d.load(self._rooms, self._bridges)
+                self._viewer3d.load(
+                    self._rooms, self._bridges,
+                    show_labels=(self._v_prev_labels.get()
+                                 and not self._is_rbe_import))
         except Exception:
             pass
 
@@ -2607,15 +3541,15 @@ class App(tk.Tk):
 
     # ── UI helpers ────────────────────────────────────────────────────────────
     def _btn(self, parent, text, cmd,
-             color=None, font=None, w=None, pady=3):
+             color=None, font=None, w=None, pady=4):
         color = color or T["accent"]
-        font  = font  or ("Segoe UI", 10, "bold")
+        font  = font  or ("Segoe UI", 9, "bold")
         kw = dict(text=text, command=cmd,
                   bg=color, fg=T["btn_fg"],
                   activebackground=color,
                   activeforeground=T["btn_fg"],
                   relief="flat", cursor="hand2",
-                  font=font, padx=8, pady=pady, bd=0)
+                  font=font, padx=10, pady=pady, bd=0)
         if w:
             kw["width"] = w
         b = tk.Button(parent, **kw)
@@ -2701,13 +3635,47 @@ class App(tk.Tk):
         if p:
             self._out_path.set(p)
 
+    def _flush_settings(self):
+        """Save all settings to config JSON."""
+        self._cfg_save_pending = False
+        d = {
+            # Paths
+            "out_path":   self._out_path.get(),
+            "tex_folder": self._tex_folder.get(),
+            "game_exe":   self._game_exe.get(),
+            # RBE import
+            "rbe_path":   self._v_rbe_path.get(),
+            "rbe_sx":     self._v_rbe_sx.get(),
+            "rbe_sy":     self._v_rbe_sy.get(),
+            "rbe_sz":     self._v_rbe_sz.get(),
+            # Generation
+            "n_rooms":    self._v_rooms.get(),
+            "layout":     self._v_layout.get(),
+            "corr_frac":  self._v_corr_frac.get(),
+            "height_var": self._v_height.get(),
+            "checkpoints":self._v_checks.get(),
+            "use_physics":self._v_use_physics.get(),
+            # Preview
+            "prev_labels": self._v_prev_labels.get(),
+            "prev_hmap":   self._v_prev_hmap.get(),
+            "prev_ramps":  self._v_prev_ramps.get(),
+        }
+        # Room size spinboxes
+        for k, v in self._sz.items():
+            d[f"sz_{k}"] = v.get()
+        # Physics params
+        for attr in ("_v_u_base", "_v_u_gain", "_v_t_air",
+                     "_v_strafe_f", "_v_rpt"):
+            if hasattr(self, attr):
+                d[attr] = getattr(self, attr).get()
+        _save_app_cfg(d)
+
     def _browse_game_exe(self):
         p = filedialog.askopenfilename(
             title="Select game executable",
             filetypes=[("Executable", "*.exe *.sh *.app"), ("All", "*.*")])
         if p:
             self._game_exe.set(p)
-            _save_app_cfg({"game_exe": p})
 
     def _on_launch_game(self):
         exe  = self._game_exe.get().strip()
@@ -2794,6 +3762,7 @@ class App(tk.Tk):
                 self._map_str = ms
                 self._rooms   = rooms
                 self._bridges = bridges
+                self._is_rbe_import = False
 
                 nb = len(rooms)*6 + len(bridges)*4
                 kb = len(ms.encode()) / 1024
@@ -2821,7 +3790,7 @@ class App(tk.Tk):
 
     def _on_save(self):
         if not self._map_str:
-            self._log("Nothing to save — generate first.", "warn")
+            self._log("Nothing to save — generate or import first.", "warn")
             return
         self._do_save(manual=True)
 
@@ -2952,24 +3921,28 @@ class App(tk.Tk):
             cxs = (ls + rs) / 2
             cys = (ts + bs) / 2
             fs  = max(7, min(14, int(min(pw, ph) / 4)))
+            min_dim = min(pw, ph)
 
-            # ── Room number — top-left ─────────────────────────────────────
-            c.create_text(ls + 4, ts + 3,
-                          text=str(i+1),
-                          fill="white",
-                          font=("Segoe UI", max(8, fs), "bold"),
-                          anchor="nw")
+            # ── Room number — top-left (LOD: hide when room is small) ─────
+            show_lbl = self._v_prev_labels.get() and not self._is_rbe_import
+            if show_lbl and min_dim > 30:
+                c.create_text(ls + 4, ts + 3,
+                              text=str(i+1),
+                              fill="white",
+                              font=("Segoe UI", max(8, fs), "bold"),
+                              anchor="nw")
 
-            # ── Z height — top-right ───────────────────────────────────────
-            z_label = f"z{room.z1:+d}" if room.z1 != 0 else "z0"
-            c.create_text(rs - 4, ts + 3,
-                          text=z_label,
-                          fill="#7fb8d0",
-                          font=("Consolas", max(6, fs-2)),
-                          anchor="ne")
+            # ── Z height — top-right (LOD: hide when room is small) ───────
+            if show_lbl and min_dim > 45:
+                z_label = f"z{room.z1:+d}" if room.z1 != 0 else "z0"
+                c.create_text(rs - 4, ts + 3,
+                              text=z_label,
+                              fill="#7fb8d0",
+                              font=("Consolas", max(6, fs-2)),
+                              anchor="ne")
 
             # ── Speed — bottom-left (only when physics model is active) ───
-            if self._v_use_physics.get():
+            if not self._is_rbe_import and self._v_use_physics.get():
                 c.create_text(ls + 4, bs - 3,
                               text=f"{room.speed_in:.0f}u",
                               fill=T["accent2"],
@@ -3013,7 +3986,7 @@ class App(tk.Tk):
                                   arrow="last", arrowshape=(9,11,4))
 
         # ── Z-height scale bar (right edge) ───────────────────────────────────
-        if z_min != z_max:
+        if z_min != z_max and self._v_prev_hmap.get():
             sx = W - 18
             for py in range(int(PAD), int(H - PAD)):
                 t = 1.0 - (py - PAD) / max(H - PAD*2, 1)
