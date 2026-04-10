@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: turnt-o-mapper-windows.exe
+            pyinstaller_args: >-
+              --onefile
+              --windowed
+              --name turnt-o-mapper
+              --icon assets/icon.ico
+            dist_file: turnt-o-mapper.exe
+
+          - os: macos-latest
+            artifact_name: turnt-o-mapper-macos
+            pyinstaller_args: >-
+              --onefile
+              --windowed
+              --name turnt-o-mapper
+            dist_file: turnt-o-mapper
+
+          - os: ubuntu-latest
+            artifact_name: turnt-o-mapper-linux
+            pyinstaller_args: >-
+              --onefile
+              --name turnt-o-mapper
+            dist_file: turnt-o-mapper
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install PyQt6 Pillow pyinstaller
+
+      - name: Bump __version__ to match tag
+        shell: bash
+        run: |
+          TAG="${{ github.ref_name }}"
+          VER="${TAG#v}"
+          echo "__version__ = \"$VER\"" > turnt_o_mapper/__version__.py
+
+      - name: Build binary (Windows)
+        if: runner.os == 'Windows'
+        run: pyinstaller ${{ matrix.pyinstaller_args }} main.py
+        continue-on-error: true
+
+      - name: Build binary (macOS / Linux)
+        if: runner.os != 'Windows'
+        run: pyinstaller ${{ matrix.pyinstaller_args }} main.py
+
+      - name: Rename artifact
+        shell: bash
+        run: |
+          SRC="dist/${{ matrix.dist_file }}"
+          DST="dist/${{ matrix.artifact_name }}"
+          if [ "$SRC" != "$DST" ]; then mv "$SRC" "$DST"; fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}
+          retention-days: 5
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

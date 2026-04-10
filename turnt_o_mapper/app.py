@@ -1,5 +1,5 @@
 """
-Main application window (Tkinter GUI).
+Main application window (PyQt6 GUI).
 
 The ``App`` class builds the full UI: header, left panel with four tabs
 (Generate, DBT Import, Textures, Settings), right panel with 2D / 3D
@@ -7,444 +7,1177 @@ preview and log.  Event handlers delegate to the generation, import, and
 preview modules for the actual work.
 """
 
+import io
+import math
 import os
 import random
 import subprocess
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
-import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext
+from PyQt6.QtWidgets import (
+    QApplication,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QLabel, QPushButton, QSlider, QSpinBox, QDoubleSpinBox,
+    QCheckBox, QLineEdit, QTabWidget, QTextEdit, QScrollArea,
+    QFileDialog, QFrame, QSizePolicy, QButtonGroup, QStatusBar,
+    QPlainTextEdit,
+)
+from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
+from PyQt6.QtGui import (
+    QColor, QTextCharFormat, QTextCursor, QFont, QPixmap, QImage,
+    QPainter, QPen, QPainterPath,
+)
 
 try:
-    from PIL import Image, ImageTk
+    from PIL import Image
     PIL_OK = True
 except ImportError:
     PIL_OK = False
 
 from .constants import (
     ALL_TEXTURES, FLOOR_TEX, WALL_TEX, CEIL_TEX,
-    DOOR_H, T, IMG_EXTS,
+    T, DARK_T, LIGHT_T, IMG_EXTS,
 )
+from .__version__ import __version__
 from .models import Room, Bridge
 from .config import load_app_cfg, save_app_cfg
 from .generation import generate_map
-from .viewer3d import Viewer3D
-from .preview2d import draw_2d_preview
+from .viewer3d import Viewer3DWidget
+from .preview2d import Preview2DWidget
 from . import dbt_import
-from .layout import _snap
+from .updater import check_for_update, download_and_restart
 
 
-class App(tk.Tk):
+# ── Stylesheet builder ────────────────────────────────────────────────────────
+def build_qss(t: dict) -> str:
+    """Generate the application QSS from a theme palette dict *t*."""
+    return f"""
+* {{
+    color: {t['text']};
+    font-family: "Segoe UI Variable", "Segoe UI", "Inter", "SF Pro Text", Arial, sans-serif;
+    font-size: 10pt;
+    outline: none;
+}}
+
+QMainWindow, QWidget {{
+    background-color: {t['bg']};
+}}
+
+QWidget#leftPanel {{
+    background-color: {t['bg_panel']};
+    border-radius: 10px;
+    border: 1px solid {t['card_border']};
+}}
+
+QWidget#rightPanel {{
+    background-color: {t['bg']};
+}}
+
+QWidget#headerWidget {{
+    background-color: {t['bg_card']};
+    border-bottom: 2px solid {t['accent']};
+}}
+
+QLabel#titleAccent {{
+    color: {t['accent']};
+    font-family: "Cascadia Code", "JetBrains Mono", "Consolas";
+    font-size: 17pt;
+    font-weight: bold;
+    letter-spacing: 1px;
+    background: transparent;
+}}
+
+QLabel#titleText {{
+    color: {t['text']};
+    font-family: "Cascadia Code", "JetBrains Mono", "Consolas";
+    font-size: 17pt;
+    font-weight: bold;
+    letter-spacing: 1px;
+    background: transparent;
+}}
+
+QLabel#titleSub {{
+    color: {t['text_dim']};
+    font-size: 8pt;
+    letter-spacing: 0.5px;
+    background: transparent;
+}}
+
+QLabel#versionLabel {{
+    color: {t['text_dim']};
+    font-size: 8pt;
+    background: transparent;
+    padding: 0 4px;
+}}
+
+QFrame#headerSep {{
+    background-color: {t['border']};
+    max-width: 1px;
+    min-width: 1px;
+}}
+
+QTabWidget::pane {{
+    border: 1px solid {t['card_border']};
+    background-color: {t['bg_panel']};
+    border-radius: 0px 8px 8px 8px;
+}}
+
+QTabBar::tab {{
+    background-color: transparent;
+    color: {t['text_dim']};
+    padding: 8px 16px;
+    font-weight: 600;
+    font-size: 9pt;
+    border: none;
+    margin-right: 2px;
+    border-radius: 6px 6px 0px 0px;
+}}
+
+QTabBar::tab:selected {{
+    background-color: {t['bg_card']};
+    color: {t['accent']};
+    border-bottom: 2px solid {t['accent']};
+}}
+
+QTabBar::tab:hover:!selected {{
+    background-color: {t['tab_hover']};
+    color: {t['text']};
+}}
+
+QSlider::groove:horizontal {{
+    height: 4px;
+    background: {t['bg_input']};
+    border-radius: 2px;
+}}
+
+QSlider::handle:horizontal {{
+    background: {t['accent']};
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+}}
+
+QSlider::handle:horizontal:hover {{
+    background: {t['accent_bright']};
+    width: 16px;
+    height: 16px;
+    margin: -6px 0;
+    border-radius: 8px;
+}}
+
+QSlider::sub-page:horizontal {{
+    background: {t['accent']};
+    border-radius: 2px;
+    height: 4px;
+}}
+
+QSpinBox, QDoubleSpinBox, QLineEdit {{
+    background-color: {t['bg_input']};
+    color: {t['text']};
+    border: 1px solid {t['card_border']};
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 9pt;
+    selection-background-color: {t['accent']};
+    selection-color: {t['selection_fg']};
+}}
+
+QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
+    border: 1px solid {t['accent']};
+}}
+
+QSpinBox::up-button, QSpinBox::down-button,
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
+    background-color: {t['spin_btn_bg']};
+    border: none;
+    width: 18px;
+    border-radius: 0px 5px 5px 0px;
+}}
+
+QSpinBox::up-button:hover, QSpinBox::down-button:hover,
+QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{
+    background-color: {t['border']};
+}}
+
+QSpinBox:disabled, QDoubleSpinBox:disabled {{
+    color: {t['text_dim']};
+    border-color: {t['disabled_border']};
+}}
+
+QCheckBox {{
+    color: {t['text']};
+    font-size: 9pt;
+    spacing: 8px;
+    background: transparent;
+}}
+
+QCheckBox::indicator {{
+    width: 16px;
+    height: 16px;
+    background-color: {t['bg_input']};
+    border: 1px solid {t['card_border']};
+    border-radius: 4px;
+}}
+
+QCheckBox::indicator:checked {{
+    background-color: {t['accent']};
+    border-color: {t['accent']};
+    image: none;
+}}
+
+QCheckBox::indicator:hover {{
+    border-color: {t['accent']};
+}}
+
+QCheckBox:disabled {{
+    color: {t['text_dim']};
+}}
+
+QPushButton {{
+    background-color: {t['btn_bg']};
+    color: {t['text']};
+    border: 1px solid {t['btn_border']};
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-weight: 600;
+    font-size: 9pt;
+    letter-spacing: 0.3px;
+}}
+
+QPushButton:hover {{
+    background-color: {t['btn_hover']};
+    border-color: {t['border']};
+    color: {t['btn_fg']};
+}}
+
+QPushButton:pressed {{
+    background-color: {t['bg_input']};
+}}
+
+QPushButton:checked {{
+    background-color: {t['accent']};
+    color: #000000;
+    border-color: {t['accent']};
+}}
+
+QPushButton#btnSave {{
+    background-color: {t['save_bg']};
+    color: #ffffff;
+    border-color: {t['save_border']};
+    font-weight: 700;
+}}
+QPushButton#btnSave:hover {{ background-color: {t['save_hover']}; border-color: {t['success']}; }}
+
+QPushButton#btnFolder {{
+    background-color: {t['folder_bg']};
+    color: #ffffff;
+    border-color: {t['folder_border']};
+}}
+QPushButton#btnFolder:hover {{ background-color: {t['folder_hover']}; }}
+
+QPushButton#btnLaunch {{
+    background-color: {t['launch_bg']};
+    color: #ffffff;
+    border-color: {t['launch_border']};
+}}
+QPushButton#btnLaunch:hover {{ background-color: {t['launch_hover']}; border-color: {t['warning']}; }}
+
+QPushButton#btnGenerate {{
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {t['gen_grad_l']}, stop:1 {t['gen_grad_r']});
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    font-size: 11pt;
+    font-weight: 700;
+    padding: 10px 20px;
+    letter-spacing: 0.5px;
+}}
+QPushButton#btnGenerate:hover {{
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {t['gen_grad_r']}, stop:1 {t['gen_grad_rh']});
+}}
+QPushButton#btnGenerate:pressed {{
+    background-color: {t['accent_press']};
+}}
+
+QPushButton#btnAuto[active="true"] {{
+    background-color: {t['auto_bg']};
+    color: {t['auto_text']};
+    border-color: {t['auto_border']};
+}}
+QPushButton#btnAuto[active="false"] {{
+    background-color: {t['btn_bg']};
+    color: {t['text_dim']};
+    border-color: {t['btn_border']};
+}}
+
+QPushButton#btnLayout {{
+    font-size: 8pt;
+    padding: 5px 8px;
+    border-radius: 5px;
+}}
+QPushButton#btnLayout:checked {{
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {t['gen_grad_l']}, stop:1 {t['gen_grad_r']});
+    color: #ffffff;
+    border-color: {t['accent']};
+}}
+
+QPushButton#btnSmall {{
+    font-size: 8pt;
+    padding: 4px 10px;
+    border-radius: 5px;
+}}
+
+QScrollArea {{
+    border: none;
+    background-color: {t['lbx_bg']};
+}}
+
+QScrollBar:vertical {{
+    background: transparent;
+    width: 6px;
+    margin: 2px;
+}}
+QScrollBar::handle:vertical {{
+    background: {t['scrollbar_h']};
+    border-radius: 3px;
+    min-height: 24px;
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {t['border']};
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+
+QScrollBar:horizontal {{
+    background: transparent;
+    height: 6px;
+}}
+QScrollBar::handle:horizontal {{
+    background: {t['scrollbar_h']};
+    border-radius: 3px;
+    min-width: 24px;
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+
+QPlainTextEdit {{
+    background-color: {t['bg_input']};
+    color: {t['text_dim']};
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 9pt;
+    border: 1px solid {t['card_border']};
+    border-radius: 6px;
+    padding: 4px;
+}}
+
+QStatusBar {{
+    background-color: {t['bg_panel']};
+    color: {t['text_dim']};
+    font-size: 8pt;
+    border-top: 1px solid {t['card_border']};
+}}
+
+QFrame#secSep {{
+    background-color: {t['sec_sep']};
+    max-height: 1px;
+    min-height: 1px;
+}}
+
+QLabel#secLabel {{
+    color: {t['accent']};
+    font-size: 8pt;
+    font-weight: 700;
+    letter-spacing: 1px;
+    background: transparent;
+}}
+
+QLabel#dimLabel {{
+    color: {t['text_dim']};
+    font-size: 7pt;
+    background: transparent;
+}}
+
+QLabel#sliderVal {{
+    color: {t['accent']};
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 9pt;
+    font-weight: bold;
+    min-width: 42px;
+    background: transparent;
+}}
+
+QWidget#texRow {{
+    background-color: {t['lbx_bg']};
+    border-radius: 3px;
+}}
+
+QWidget#texRow:hover {{
+    background-color: {t['lbx_sel']};
+}}
+
+QWidget#prevCard {{
+    background-color: {t['bg_card']};
+    border-radius: 8px;
+    border: 1px solid {t['card_border']};
+}}
+
+QWidget#updateBanner {{
+    background-color: {t['update_bg']};
+    border-bottom: 1px solid {t['success']};
+}}
+
+QWidget#updateBanner QLabel {{
+    color: {t['success']};
+    font-weight: bold;
+    background: transparent;
+}}
+
+QLabel#mapPreviewHdr {{
+    color: {t['text']};
+    font-size: 9pt;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    background: transparent;
+}}
+
+QLabel#statsLabel {{
+    color: {t['text_dim']};
+    font-size: 8pt;
+    font-family: "Cascadia Code", "Consolas", monospace;
+    background: transparent;
+}}
+
+QLabel#logHdr {{
+    color: {t['text']};
+    font-size: 9pt;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    background: transparent;
+}}
+"""
+
+
+DARK_QSS = build_qss(DARK_T)  # default dark stylesheet (used by main.py on startup)
+
+
+# ── Theme colour lerp ─────────────────────────────────────────────────────────
+def _lerp_color(a: QColor, b: QColor, t: float) -> QColor:
+    t = max(0.0, min(1.0, t))
+    return QColor(
+        int(a.red()   + (b.red()   - a.red())   * t),
+        int(a.green() + (b.green() - a.green()) * t),
+        int(a.blue()  + (b.blue()  - a.blue())  * t),
+    )
+
+
+# ── Theme toggle switch (moon / sun) ─────────────────────────────────────────
+class ThemeToggle(QWidget):
+    """Pill-shaped toggle that slides between 🌙 dark (left) and ☀ light (right)."""
+
+    toggled = pyqtSignal(bool)   # True = dark
+
+    _W, _H = 80, 32
+
+    def __init__(self, dark: bool = True, parent=None):
+        super().__init__(parent)
+        self._dark   = dark
+        self._pos    = 0.0 if dark else 1.0   # 0 = dark/left, 1 = light/right
+        self._target = self._pos
+        self._timer  = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._tick)
+        self.setFixedSize(self._W, self._H)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+
+    # ── public API ────────────────────────────────────────────────────────
+    def is_dark(self) -> bool:
+        return self._dark
+
+    def set_dark(self, dark: bool, animate: bool = True):
+        self._dark   = dark
+        self._target = 0.0 if dark else 1.0
+        if animate:
+            self._timer.start()
+        else:
+            self._pos = self._target
+            self.update()
+
+    # ── internals ─────────────────────────────────────────────────────────
+    def mousePressEvent(self, event):
+        self._dark   = not self._dark
+        self._target = 0.0 if self._dark else 1.0
+        self._timer.start()
+        self.toggled.emit(self._dark)
+
+    def _tick(self):
+        diff = self._target - self._pos
+        if abs(diff) < 0.015:
+            self._pos = self._target
+            self._timer.stop()
+        else:
+            self._pos += diff * 0.22
+        self.update()
+
+    # ── paint ─────────────────────────────────────────────────────────────
+    def paintEvent(self, _event):
+        W, H, t = self._W, self._H, self._pos
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # ── Track / pill ──────────────────────────────────────────────────
+        track_dark  = QColor(0x1a, 0x20, 0x44)
+        track_light = QColor(0x5b, 0xa4, 0xe8)
+        p.setBrush(_lerp_color(track_dark, track_light, t))
+        p.setPen(Qt.PenStyle.NoPen)
+        pill = QPainterPath()
+        pill.addRoundedRect(0, 0, W, H, H / 2, H / 2)
+        p.drawPath(pill)
+
+        # ── Moon (left side) ──────────────────────────────────────────────
+        moon_alpha = int((1.0 - t) * 220 + 35)   # always slightly visible
+        cx_m, cy_m, r_m = 18, H // 2, 7
+        # Full disc
+        disc = QPainterPath()
+        disc.addEllipse(cx_m - r_m, cy_m - r_m, r_m * 2, r_m * 2)
+        # Subtract offset disc to carve crescent
+        bite = QPainterPath()
+        bite.addEllipse(cx_m - r_m + 5, cy_m - r_m - 3, r_m * 2 + 1, r_m * 2 + 1)
+        crescent = disc.subtracted(bite)
+        moon_col = QColor(0xd8, 0xec, 0xff, moon_alpha)
+        p.fillPath(crescent, moon_col)
+
+        # ── Sun (right side) ──────────────────────────────────────────────
+        sun_alpha = int(t * 220 + 35)             # always slightly visible
+        cx_s, cy_s, r_s = W - 18, H // 2, 5
+        sun_col  = QColor(0xff, 0xd0, 0x40, sun_alpha)
+        ray_col  = QColor(0xff, 0xd0, 0x40, sun_alpha)
+        pen = QPen(ray_col, 1.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for i in range(8):
+            ang = i * math.pi / 4
+            x1 = cx_s + (r_s + 2) * math.cos(ang)
+            y1 = cy_s + (r_s + 2) * math.sin(ang)
+            x2 = cx_s + (r_s + 5) * math.cos(ang)
+            y2 = cy_s + (r_s + 5) * math.sin(ang)
+            p.drawLine(int(x1), int(y1), int(x2), int(y2))
+        p.setBrush(sun_col)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(cx_s - r_s, cy_s - r_s, r_s * 2, r_s * 2)
+
+        # ── Thumb ─────────────────────────────────────────────────────────
+        margin = 3
+        sz     = H - 2 * margin
+        travel = W - 2 * margin - sz
+        tx     = margin + self._pos * travel
+        th_col = _lerp_color(QColor(0xff, 0xff, 0xff),
+                             QColor(0xff, 0xe0, 0x6a), t)
+        # Subtle shadow ring
+        p.setBrush(QColor(0, 0, 0, 30))
+        p.drawEllipse(int(tx) - 1, margin - 1, sz + 2, sz + 2)
+        p.setBrush(th_col)
+        p.drawEllipse(int(tx), margin, sz, sz)
+
+        p.end()
+
+
+# ── Helper: section header ────────────────────────────────────────────────────
+def _sec_widget(title: str) -> QWidget:
+    w = QWidget()
+    w.setContentsMargins(0, 8, 0, 3)
+    h = QHBoxLayout(w)
+    h.setContentsMargins(0, 0, 0, 0)
+    h.setSpacing(6)
+    lbl = QLabel(title)
+    lbl.setObjectName("secLabel")
+    sep = QFrame()
+    sep.setObjectName("secSep")
+    sep.setFrameShape(QFrame.Shape.HLine)
+    h.addWidget(lbl)
+    h.addWidget(sep, stretch=1)
+    return w
+
+
+class App(QMainWindow):
     """Main Turnt-o-mapper application window."""
+
+    # Thread-safe dispatch: emit from any thread, slot runs in main thread
+    _dispatch_signal = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
-        self.title("Turnt-o-mapper")
-        self.configure(bg=T["bg"])
-        self.minsize(860, 600)
-        self.resizable(True, True)
+        self._dispatch_signal.connect(lambda fn: fn())
+        self.setWindowTitle("Turnt-o-mapper")
+        self.setMinimumSize(900, 640)
 
+        self._dark_mode      = True
         self._map_str        = ""
         self._last_map_path  = ""
         self._rooms:   List[Room]   = []
         self._bridges: List[Bridge] = []
         self._is_rbe_import  = False
+        self._tex_paths: Dict[str, str] = {}
+        self._tex_pixmaps: Dict[str, QPixmap] = {}
+        # texture checkbox references: tex_name -> (floor_cb, wall_cb, ceil_cb)
+        self._tex_cbs: Dict[str, tuple] = {}
 
-        app_cfg = load_app_cfg()
+        self._root_layout: Optional[QVBoxLayout] = None
 
-        self._tex_folder = tk.StringVar(value=app_cfg.get("tex_folder", ""))
-        self._out_path   = tk.StringVar(
-            value=app_cfg.get("out_path",
-                              os.path.join(os.getcwd(), "generated.map")))
-        self._game_exe   = tk.StringVar(value=app_cfg.get("game_exe", ""))
-        self._tex_paths: Dict[str, str]    = {}
-        self._thumb_refs: Dict[str, object] = {}
+        # Config save debounce
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(500)
+        self._save_timer.timeout.connect(self._flush_settings)
 
-        self._floor_sel: Dict[str, tk.BooleanVar] = {}
-        self._wall_sel:  Dict[str, tk.BooleanVar] = {}
-        self._ceil_sel:  Dict[str, tk.BooleanVar] = {}
-
-        self._build_styles()
         self._build_ui()
-
-        # Restore settings from config
-        self._v_rbe_sx.set(app_cfg.get("rbe_sx", 48))
-        self._v_rbe_sy.set(app_cfg.get("rbe_sy", 48))
-        self._v_rbe_sz.set(app_cfg.get("rbe_sz", 42))
-        if app_cfg.get("rbe_path"):
-            self._v_rbe_path.set(app_cfg["rbe_path"])
-        if "n_rooms" in app_cfg:
-            self._v_rooms.set(app_cfg["n_rooms"])
-        if "layout" in app_cfg:
-            self._v_layout.set(app_cfg["layout"])
-        if "corr_frac" in app_cfg:
-            self._v_corr_frac.set(app_cfg["corr_frac"])
-        if "height_var" in app_cfg:
-            self._v_height.set(app_cfg["height_var"])
-        if "checkpoints" in app_cfg:
-            self._v_checks.set(app_cfg["checkpoints"])
-        if "use_physics" in app_cfg:
-            self._v_use_physics.set(app_cfg["use_physics"])
-        for k, v in self._sz.items():
-            cfg_key = f"sz_{k}"
-            if cfg_key in app_cfg:
-                v.set(app_cfg[cfg_key])
-        for attr in ("_v_u_base", "_v_u_gain", "_v_t_air",
-                     "_v_strafe_f", "_v_rpt"):
-            if attr in app_cfg and hasattr(self, attr):
-                getattr(self, attr).set(app_cfg[attr])
-        if "prev_labels" in app_cfg:
-            self._v_prev_labels.set(app_cfg["prev_labels"])
-        if "prev_hmap" in app_cfg:
-            self._v_prev_hmap.set(app_cfg["prev_hmap"])
-        if "prev_ramps" in app_cfg:
-            self._v_prev_ramps.set(app_cfg["prev_ramps"])
-
-        # Auto-save on any variable change (debounced 500 ms)
-        self._cfg_save_pending = False
-        def _schedule_save(*_):
-            if not self._cfg_save_pending:
-                self._cfg_save_pending = True
-                self.after(500, self._flush_settings)
-        tracked = [self._out_path, self._tex_folder, self._game_exe,
-                   self._v_rbe_path, self._v_rbe_sx, self._v_rbe_sy,
-                   self._v_rbe_sz, self._v_rooms, self._v_layout,
-                   self._v_corr_frac, self._v_height, self._v_checks,
-                   self._v_use_physics, self._v_prev_labels,
-                   self._v_prev_hmap, self._v_prev_ramps]
-        tracked.extend(self._sz.values())
-        for attr in ("_v_u_base", "_v_u_gain", "_v_t_air",
-                     "_v_strafe_f", "_v_rpt"):
-            if hasattr(self, attr):
-                tracked.append(getattr(self, attr))
-        for var in tracked:
-            var.trace_add("write", _schedule_save)
+        self._restore_config()
 
         self._randomize_seed(silent=True)
         self._log("Turnt-o-mapper ready. Configure and hit Generate!", "info")
 
-    # ── styles ────────────────────────────────────────────────────────────
-    def _build_styles(self):
-        s = ttk.Style(self)
-        s.theme_use("clam")
-        bg  = T["bg"];      bgp = T["bg_panel"]; bgc = T["bg_card"]
-        acc = T["accent"];  txt = T["text"];      dim = T["text_dim"]
-        brd = T["border"]
+        # Auto-update check (background, non-blocking)
+        check_for_update(self._on_update_available)
 
-        s.configure(".",              background=bg,  foreground=txt, font=("Segoe UI", 10))
-        s.configure("TFrame",         background=bg)
-        s.configure("P.TFrame",       background=bgp)
-        s.configure("C.TFrame",       background=bgc)
-        s.configure("TLabel",         background=bg,  foreground=txt)
-        s.configure("P.TLabel",       background=bgp, foreground=txt)
-        s.configure("Pd.TLabel",      background=bgp, foreground=dim)
-        s.configure("C.TLabel",       background=bgc, foreground=txt)
-        s.configure("H1.TLabel",      background=bg,  foreground=acc, font=("Segoe UI", 22, "bold"))
-        s.configure("H2.TLabel",      background=bgp, foreground=acc, font=("Segoe UI", 9, "bold"))
-        s.configure("H3.TLabel",      background=bgc, foreground=acc, font=("Segoe UI",  9, "bold"))
-        s.configure("TNotebook",      background=bg,  borderwidth=0)
-        s.configure("TNotebook.Tab",  background=bgp, foreground=dim, padding=[14, 7], font=("Segoe UI", 9, "bold"))
-        s.map("TNotebook.Tab", background=[("selected", bgc)], foreground=[("selected", acc)])
-        s.configure("TCheckbutton",   background=bgp, foreground=txt, indicatorcolor=bgc, font=("Segoe UI", 9))
-        s.map("TCheckbutton", indicatorcolor=[("selected", acc)])
-        s.configure("TScale",         background=bgp, troughcolor=T["bg_input"], sliderthickness=13, sliderrelief="flat")
-        s.configure("TEntry",         fieldbackground=T["bg_input"], foreground=txt, insertcolor=txt, bordercolor=brd, relief="flat", padding=5)
-        s.configure("TSeparator",     background=brd)
-        s.configure("Vertical.TScrollbar",   background=brd, troughcolor=bg, bordercolor=bg, arrowcolor=dim, relief="flat")
-        s.configure("Horizontal.TScrollbar", background=brd, troughcolor=bg, bordercolor=bg, arrowcolor=dim, relief="flat")
-
-    # ── master layout ─────────────────────────────────────────────────────
+    # ── UI construction ───────────────────────────────────────────────────
     def _build_ui(self):
-        hdr = tk.Frame(self, bg=T["bg_card"])
-        hdr.pack(fill="x")
-        stripe = tk.Canvas(hdr, height=3, bg=T["bg_card"], highlightthickness=0)
-        stripe.pack(fill="x")
-        stripe.bind("<Configure>", lambda e: (
-            stripe.delete("all"),
-            stripe.create_rectangle(0, 0, e.width, 3, fill=T["accent"], outline="")))
-        hdr_inner = tk.Frame(hdr, bg=T["bg_card"], pady=10)
-        hdr_inner.pack(fill="x", padx=18)
-        tk.Label(hdr_inner, text="TURNT", bg=T["bg_card"], fg=T["accent"],
-                 font=("Consolas", 18, "bold")).pack(side="left")
-        tk.Label(hdr_inner, text="-O-MAPPER", bg=T["bg_card"], fg=T["text"],
-                 font=("Consolas", 18, "bold")).pack(side="left")
-        tk.Frame(hdr_inner, bg=T["accent"], width=2).pack(side="left", fill="y", padx=14, pady=2)
-        tk.Label(hdr_inner, text=".map generator + DBT importer",
-                 bg=T["bg_card"], fg=T["text_dim"], font=("Segoe UI", 8)).pack(side="left")
+        central = QWidget()
+        self.setCentralWidget(central)
+        self._root_layout = QVBoxLayout(central)
+        self._root_layout.setContentsMargins(0, 0, 0, 0)
+        self._root_layout.setSpacing(0)
 
-        body = ttk.Frame(self)
-        body.pack(fill="both", expand=True, padx=12, pady=(8, 8))
-        body.columnconfigure(0, weight=2, minsize=340)
-        body.columnconfigure(1, weight=3)
-        body.rowconfigure(0, weight=1)
+        self._root_layout.addWidget(self._build_header())
 
-        left = ttk.Frame(body, style="P.TFrame", padding=(10, 10))
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        self._build_left(left)
+        body = QWidget()
+        body_lay = QHBoxLayout(body)
+        body_lay.setContentsMargins(10, 8, 10, 8)
+        body_lay.setSpacing(8)
 
-        right = ttk.Frame(body)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.rowconfigure(0, weight=3)
-        right.rowconfigure(1, weight=1)
-        right.columnconfigure(0, weight=1)
-        self._build_right(right)
+        left = self._build_left()
+        left.setObjectName("leftPanel")
+        left.setMinimumWidth(340)
 
-        self._status = tk.Label(self, text="Ready", anchor="w", padx=10,
-                                bg=T["bg_panel"], fg=T["text_dim"],
-                                font=("Segoe UI", 8))
-        self._status.pack(fill="x", side="bottom")
+        right = self._build_right()
+        right.setObjectName("rightPanel")
 
-    # ── LEFT PANEL ────────────────────────────────────────────────────────
-    def _build_left(self, p):
-        nb = ttk.Notebook(p)
-        nb.pack(fill="both", expand=True)
+        body_lay.addWidget(left, stretch=2)
+        body_lay.addWidget(right, stretch=3)
+        self._root_layout.addWidget(body, stretch=1)
 
-        t1 = ttk.Frame(nb, style="P.TFrame", padding=8)
-        t2 = ttk.Frame(nb, style="P.TFrame", padding=8)
-        t3 = ttk.Frame(nb, style="P.TFrame", padding=8)
-        t4 = ttk.Frame(nb, style="P.TFrame", padding=8)
-        nb.add(t1, text="  Generate  ")
-        nb.add(t2, text="  DBT Import  ")
-        nb.add(t3, text="  Textures  ")
-        nb.add(t4, text="  Settings  ")
+        self._status_bar = QStatusBar()
+        self.setStatusBar(self._status_bar)
+        self._status_bar.showMessage("Ready")
 
-        self._tab_generate(t1)
-        self._tab_dbt_import(t2)
-        self._tab_textures(t3)
-        self._tab_settings(t4)
+    def _build_header(self) -> QWidget:
+        hdr = QWidget()
+        hdr.setObjectName("headerWidget")
+        hdr.setFixedHeight(52)
+        lay = QHBoxLayout(hdr)
+        lay.setContentsMargins(18, 8, 18, 8)
+        lay.setSpacing(0)
 
-        ttk.Separator(p, orient="horizontal").pack(fill="x", pady=(6, 4))
-        shared_row = ttk.Frame(p, style="P.TFrame")
-        shared_row.pack(fill="x", pady=(0, 4))
-        shared_row.columnconfigure(0, weight=1)
-        shared_row.columnconfigure(1, weight=0)
-        shared_row.columnconfigure(2, weight=1)
-        BTN_F = ("Segoe UI", 9, "bold")
-        self._btn(shared_row, "Save .map", self._on_save,
-                  color=T["success"], font=BTN_F).grid(row=0, column=0, sticky="ew", padx=(0, 3))
-        self._btn(shared_row, "Open folder", self._on_open_folder,
-                  color=T["accent2"], font=BTN_F).grid(row=0, column=1, sticky="ew", padx=3)
-        self._btn(shared_row, "Launch game", self._on_launch_game,
-                  color=T["warning"], font=BTN_F).grid(row=0, column=2, sticky="ew", padx=(3, 0))
+        turnt = QLabel("TURNT")
+        turnt.setObjectName("titleAccent")
+        mapper = QLabel("-O-MAPPER")
+        mapper.setObjectName("titleText")
+        sep = QFrame()
+        sep.setObjectName("headerSep")
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sub = QLabel(".map generator + DBT importer")
+        sub.setObjectName("titleSub")
 
-    def _tab_generate(self, p):
-        self._v_rooms = tk.IntVar(value=10)
-        self._slider(p, "Number of rooms", self._v_rooms, 2, 100)
+        lbl_ver = QLabel(f"v{__version__}")
+        lbl_ver.setObjectName("versionLabel")
 
-        sr = ttk.Frame(p, style="P.TFrame")
-        sr.pack(fill="x", pady=(2, 4))
-        self._v_autorand = tk.BooleanVar(value=True)
-        self._auto_btn = tk.Button(sr, text="\U0001f3b2 Auto",
-            bg=T["accent2"], fg=T["btn_fg"], font=("Segoe UI", 8, "bold"),
-            relief="flat", cursor="hand2", padx=6, pady=2, bd=0,
-            activebackground=T["lbx_sel"], command=self._toggle_autorand)
-        self._auto_btn.pack(side="left")
-        self._v_seed = tk.IntVar(value=0)
-        self._seed_spin = self._spinbox(sr, self._v_seed, 0, 9_999_999, 1,
-                                        state="readonly", pack=False)
-        self._seed_spin.pack(side="left", padx=(8, 0), fill="x", expand=True)
+        lay.addWidget(turnt)
+        lay.addWidget(mapper)
+        lay.addSpacing(14)
+        lay.addWidget(sep)
+        lay.addSpacing(14)
+        lay.addWidget(sub)
+        lay.addStretch()
+        lay.addWidget(lbl_ver)
+        return hdr
 
-        gen_row = ttk.Frame(p, style="P.TFrame")
-        gen_row.pack(fill="x", pady=(6, 4))
-        self._btn(gen_row, "\u26a1 Generate", self._on_generate,
-                  color=T["accent"], font=("Segoe UI", 11, "bold")).pack(
-            side="left", fill="x", expand=True, padx=(0, 4))
-        self._btn(gen_row, "\U0001f3b2 New seed", self._randomize_seed,
-                  color=T["accent2"]).pack(side="left", fill="x", expand=True)
+    # ── Left panel ────────────────────────────────────────────────────────
+    def _build_left(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(4)
 
-        ttk.Separator(p, orient="horizontal").pack(fill="x", pady=(4, 0))
+        self._left_tabs = QTabWidget()
+        self._left_tabs.addTab(self._tab_generate(),   "Generate")
+        self._left_tabs.addTab(self._tab_dbt_import(), "DBT Import")
+        self._left_tabs.addTab(self._tab_textures(),   "Textures")
+        self._left_tabs.addTab(self._tab_settings(),   "Settings")
+        lay.addWidget(self._left_tabs, stretch=1)
 
-        q = ttk.Frame(p, style="P.TFrame")
-        q.pack(fill="both", expand=True)
+        # Separator
+        sep = QFrame()
+        sep.setObjectName("secSep")
+        sep.setFrameShape(QFrame.Shape.HLine)
+        lay.addWidget(sep)
 
-        self._sec(q, "Room settings")
-        g = ttk.Frame(q, style="P.TFrame")
-        g.pack(fill="x", pady=(0, 2))
+        # Shared action buttons
+        btn_row = QWidget()
+        br_lay = QHBoxLayout(btn_row)
+        br_lay.setContentsMargins(0, 4, 0, 4)
+        br_lay.setSpacing(6)
+
+        self._btn_save = QPushButton("Save .map")
+        self._btn_save.setObjectName("btnSave")
+        self._btn_save.clicked.connect(self._on_save)
+
+        self._btn_folder = QPushButton("Open folder")
+        self._btn_folder.setObjectName("btnFolder")
+        self._btn_folder.clicked.connect(self._on_open_folder)
+
+        self._btn_launch = QPushButton("Launch game")
+        self._btn_launch.setObjectName("btnLaunch")
+        self._btn_launch.clicked.connect(self._on_launch_game)
+
+        br_lay.addWidget(self._btn_save,   stretch=1)
+        br_lay.addWidget(self._btn_folder, stretch=1)
+        br_lay.addWidget(self._btn_launch, stretch=1)
+        lay.addWidget(btn_row)
+        return w
+
+    def _tab_generate(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(4)
+        scroll.setWidget(inner)
+
+        # Rooms slider
+        lay.addWidget(_sec_widget("Number of rooms"))
+        rooms_row = QWidget()
+        rr = QHBoxLayout(rooms_row)
+        rr.setContentsMargins(0, 0, 0, 0)
+        self._spin_rooms = QSpinBox()
+        self._spin_rooms.setRange(2, 100)
+        self._spin_rooms.setValue(10)
+        self._lbl_rooms = QLabel("10")
+        self._lbl_rooms.setObjectName("sliderVal")
+        self._slider_rooms = QSlider(Qt.Orientation.Horizontal)
+        self._slider_rooms.setRange(2, 100)
+        self._slider_rooms.setValue(10)
+        self._slider_rooms.valueChanged.connect(
+            lambda v: (self._lbl_rooms.setText(str(v)),
+                       self._spin_rooms.blockSignals(True),
+                       self._spin_rooms.setValue(v),
+                       self._spin_rooms.blockSignals(False),
+                       self._schedule_save()))
+        self._spin_rooms.valueChanged.connect(
+            lambda v: (self._slider_rooms.setValue(v),
+                       self._lbl_rooms.setText(str(v)),
+                       self._schedule_save()))
+        rr.addWidget(self._slider_rooms, stretch=1)
+        rr.addWidget(self._lbl_rooms)
+        lay.addWidget(rooms_row)
+
+        # Seed row
+        seed_row = QWidget()
+        sr = QHBoxLayout(seed_row)
+        sr.setContentsMargins(0, 4, 0, 4)
+        sr.setSpacing(6)
+        self._btn_auto = QPushButton("🎲 Auto")
+        self._btn_auto.setObjectName("btnAuto")
+        self._btn_auto.setCheckable(True)
+        self._btn_auto.setChecked(True)
+        self._btn_auto.setProperty("active", "true")
+        self._btn_auto.clicked.connect(self._toggle_autorand)
+        self._spin_seed = QSpinBox()
+        self._spin_seed.setRange(0, 9_999_999)
+        self._spin_seed.setValue(0)
+        self._spin_seed.setReadOnly(True)
+        self._spin_seed.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        sr.addWidget(self._btn_auto)
+        sr.addWidget(self._spin_seed, stretch=1)
+        lay.addWidget(seed_row)
+
+        # Generate button (full-width)
+        self._btn_gen = QPushButton("⚡  Generate")
+        self._btn_gen.setObjectName("btnGenerate")
+        self._btn_gen.clicked.connect(self._on_generate)
+        lay.addWidget(self._btn_gen)
+
+        # Map name
+        name_row = QWidget()
+        nr = QHBoxLayout(name_row)
+        nr.setContentsMargins(0, 6, 0, 0)
+        nr.setSpacing(6)
+        lbl_n = QLabel("Map name:")
+        lbl_n.setObjectName("dimLabel")
+        self._edit_map_name_gen = QLineEdit("generated")
+        self._edit_map_name_gen.setPlaceholderText("generated")
+        suf = QLabel(".map")
+        suf.setObjectName("dimLabel")
+        nr.addWidget(lbl_n)
+        nr.addWidget(self._edit_map_name_gen, stretch=1)
+        nr.addWidget(suf)
+        lay.addWidget(name_row)
+
+        sep = QFrame(); sep.setObjectName("secSep"); sep.setFrameShape(QFrame.Shape.HLine)
+        lay.addWidget(sep)
+
+        # Room sizes grid
+        lay.addWidget(_sec_widget("Room settings"))
+        sz_grid = QWidget()
+        g = QGridLayout(sz_grid)
+        g.setContentsMargins(0, 0, 0, 0)
+        g.setSpacing(4)
         labels  = ["Min W", "Max W", "Min D", "Max D", "Min H", "Max H"]
         defvals = [384, 2048, 256, 768, 256, 640]
-        self._sz: Dict[str, tk.IntVar] = {}
+        self._sz: Dict[str, QSpinBox] = {}
         for i, (lbl, val) in enumerate(zip(labels, defvals)):
             r, c = divmod(i, 2)
-            f = ttk.Frame(g, style="P.TFrame")
-            f.grid(row=r, column=c, padx=3, pady=2, sticky="ew")
-            g.columnconfigure(c, weight=1)
-            ttk.Label(f, text=lbl, style="P.TLabel", font=("Segoe UI", 7)).pack(anchor="w")
-            v = tk.IntVar(value=val)
-            self._sz[lbl] = v
-            self._spinbox(f, v, 64, 4096, 64)
-        tk.Label(q, text="Long side = travel axis  |  Short side = lateral sweep",
-                 bg=T["bg_panel"], fg=T["text_dim"], font=("Segoe UI", 7)).pack(anchor="w", pady=(0, 2))
+            cell = QWidget()
+            cl = QVBoxLayout(cell)
+            cl.setContentsMargins(0, 0, 0, 0)
+            cl.setSpacing(1)
+            l = QLabel(lbl); l.setObjectName("dimLabel")
+            sb = QSpinBox()
+            sb.setRange(64, 4096)
+            sb.setSingleStep(64)
+            sb.setValue(val)
+            sb.valueChanged.connect(self._schedule_save)
+            self._sz[lbl] = sb
+            cl.addWidget(l)
+            cl.addWidget(sb)
+            g.addWidget(cell, r, c)
+            g.setColumnStretch(c, 1)
+        lay.addWidget(sz_grid)
 
-        cw_row = ttk.Frame(q, style="P.TFrame")
-        cw_row.pack(fill="x", pady=(0, 4))
-        ttk.Label(cw_row, text="Corridor width", style="P.TLabel", font=("Segoe UI", 7)).pack(anchor="w")
-        self._v_corr_frac = tk.DoubleVar(value=0.67)
-        cw_lbl_var = tk.StringVar(value="67%")
-        def _update_cw_lbl(*_):
-            v = self._v_corr_frac.get()
-            cw_lbl_var.set("100% (open)" if v >= 0.98 else f"{int(v*100)}%")
-        self._v_corr_frac.trace_add("write", _update_cw_lbl)
-        cw_inner = ttk.Frame(cw_row, style="P.TFrame")
-        cw_inner.pack(fill="x")
-        ttk.Scale(cw_inner, from_=0.25, to=1.0, variable=self._v_corr_frac,
-                  orient="horizontal").pack(side="left", fill="x", expand=True)
-        ttk.Label(cw_inner, textvariable=cw_lbl_var, style="Pd.TLabel",
-                  font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
+        hint = QLabel("Long side = travel axis  |  Short side = lateral sweep")
+        hint.setObjectName("dimLabel")
+        lay.addWidget(hint)
 
-        self._v_height = tk.BooleanVar(value=True)
-        self._v_checks = tk.BooleanVar(value=True)
-        for text, var in [
-            ("Height variation between rooms", self._v_height),
-            ("Add trigger_checkpoint entities", self._v_checks),
-        ]:
-            ttk.Checkbutton(q, text=text, variable=var).pack(anchor="w", pady=1)
+        # Corridor width + Rooms per segment (side by side)
+        lay.addWidget(_sec_widget("Corridor & structure"))
+        cw_row = QWidget()
+        cwr = QHBoxLayout(cw_row)
+        cwr.setContentsMargins(0, 0, 0, 0)
+        cwr.setSpacing(8)
 
-        ttk.Separator(q, orient="horizontal").pack(fill="x", pady=(6, 2))
+        # Corridor width slider
+        corr_cell = QWidget()
+        corr_lay = QVBoxLayout(corr_cell)
+        corr_lay.setContentsMargins(0, 0, 0, 0)
+        corr_lay.setSpacing(2)
+        corr_hdr = QWidget()
+        corr_hdr_lay = QHBoxLayout(corr_hdr)
+        corr_hdr_lay.setContentsMargins(0, 0, 0, 0)
+        corr_hdr_lay.addWidget(QLabel("Corridor width"))
+        self._lbl_corr = QLabel("67%")
+        self._lbl_corr.setObjectName("sliderVal")
+        corr_hdr_lay.addStretch()
+        corr_hdr_lay.addWidget(self._lbl_corr)
+        self._slider_corr = QSlider(Qt.Orientation.Horizontal)
+        self._slider_corr.setRange(25, 100)
+        self._slider_corr.setValue(67)
+        self._slider_corr.valueChanged.connect(
+            lambda v: (self._lbl_corr.setText("100% (open)" if v >= 98 else f"{v}%"),
+                       self._schedule_save()))
+        corr_lay.addWidget(corr_hdr)
+        corr_lay.addWidget(self._slider_corr)
+        cwr.addWidget(corr_cell, stretch=1)
 
-        self._sec(q, "Physics")
-        self._v_use_physics = tk.BooleanVar(value=False)
-        phy_hdr = ttk.Frame(q, style="P.TFrame")
-        phy_hdr.pack(fill="x", pady=(0, 4))
-        tk.Checkbutton(phy_hdr, text="Use acceleration model",
-            variable=self._v_use_physics,
-            bg=T["bg_card"], fg=T["text"], selectcolor=T["bg_input"],
-            activebackground=T["bg_card"], activeforeground=T["accent"],
-            font=("Segoe UI", 8), anchor="w", relief="flat",
-            command=self._toggle_physics).pack(side="left")
-        pg = ttk.Frame(q, style="P.TFrame")
-        pg.pack(fill="x", pady=(0, 4))
-        pg.columnconfigure(0, weight=1)
-        pg.columnconfigure(1, weight=1)
+        # Rooms per segment (structural, not physics)
+        rpt_cell = QWidget()
+        rpt_lay = QVBoxLayout(rpt_cell)
+        rpt_lay.setContentsMargins(0, 0, 0, 0)
+        rpt_lay.setSpacing(2)
+        rpt_lbl = QLabel("Rooms / segment")
+        rpt_lbl.setObjectName("dimLabel")
+        self._spin_rpt = QSpinBox()
+        self._spin_rpt.setRange(1, 10)
+        self._spin_rpt.setValue(3)
+        self._spin_rpt.setFixedWidth(64)
+        self._spin_rpt.valueChanged.connect(self._schedule_save)
+        rpt_lay.addWidget(rpt_lbl)
+        rpt_lay.addWidget(self._spin_rpt)
+        cwr.addWidget(rpt_cell)
+
+        lay.addWidget(cw_row)
+
+        # Checkboxes
+        self._chk_height = QCheckBox("Height variation between rooms")
+        self._chk_height.setChecked(True)
+        self._chk_height.stateChanged.connect(self._schedule_save)
+        self._chk_checks = QCheckBox("Add trigger_checkpoint entities")
+        self._chk_checks.setChecked(True)
+        self._chk_checks.stateChanged.connect(self._schedule_save)
+        lay.addWidget(self._chk_height)
+        lay.addWidget(self._chk_checks)
+
+        sep2 = QFrame(); sep2.setObjectName("secSep"); sep2.setFrameShape(QFrame.Shape.HLine)
+        lay.addWidget(sep2)
+
+        # Physics
+        lay.addWidget(_sec_widget("Physics"))
+        self._chk_physics = QCheckBox("Use acceleration model")
+        self._chk_physics.stateChanged.connect(lambda _: (self._toggle_physics(), self._schedule_save()))
+        lay.addWidget(self._chk_physics)
+
+        phy_grid = QWidget()
+        pg = QGridLayout(phy_grid)
+        pg.setContentsMargins(0, 2, 0, 4)
+        pg.setSpacing(4)
         phy_params = [
-            ("Base speed (UPS)",      "_v_u_base",   550, 100, 2000, 10),
-            ("Speed gain / room",     "_v_u_gain",    60,   0,  300,  5),
-            ("Air time (\u00d70.01 s)",    "_v_t_air",     68,  30,  150,  1),
-            ("Strafe factor (\u00d70.01)", "_v_strafe_f",  20,   5,   40,  1),
-            ("Rooms per segment",     "_v_rpt",        3,   1,   10,  1),
+            ("Base speed (UPS)",       "_spin_u_base",   550, 100, 2000, 10),
+            ("Speed gain / room",      "_spin_u_gain",    60,   0,  300,  5),
+            ("Air time (×0.01 s)",     "_spin_t_air",     68,  30,  150,  1),
+            ("Strafe factor (×0.01)",  "_spin_strafe_f",  20,   5,   40,  1),
         ]
-        self._phy_widgets: list = []
+        self._phy_widgets: List[QSpinBox] = []
         for row_i, (lbl, attr, dflt, lo, hi, inc) in enumerate(phy_params):
             r, c = divmod(row_i, 2)
-            f = ttk.Frame(pg, style="P.TFrame")
-            f.grid(row=r, column=c, padx=3, pady=2, sticky="ew")
-            ttk.Label(f, text=lbl, style="P.TLabel", font=("Segoe UI", 7)).pack(anchor="w")
-            v = tk.IntVar(value=dflt)
-            setattr(self, attr, v)
-            sb = self._spinbox(f, v, lo, hi, inc)
+            cell = QWidget()
+            cl = QVBoxLayout(cell)
+            cl.setContentsMargins(0, 0, 0, 0)
+            cl.setSpacing(1)
+            l = QLabel(lbl); l.setObjectName("dimLabel")
+            sb = QSpinBox()
+            sb.setRange(lo, hi)
+            sb.setSingleStep(inc)
+            sb.setValue(dflt)
+            sb.valueChanged.connect(self._schedule_save)
+            setattr(self, attr, sb)
             self._phy_widgets.append(sb)
+            cl.addWidget(l)
+            cl.addWidget(sb)
+            pg.addWidget(cell, r, c)
+            pg.setColumnStretch(c, 1)
+        lay.addWidget(phy_grid)
         self._toggle_physics()
 
-        ttk.Separator(q, orient="horizontal").pack(fill="x", pady=(6, 2))
+        sep3 = QFrame(); sep3.setObjectName("secSep"); sep3.setFrameShape(QFrame.Shape.HLine)
+        lay.addWidget(sep3)
 
-        self._sec(q, "Layout style")
-        self._v_layout = tk.StringVar(value="Zigzag")
-        layouts = ["Linear", "Zigzag", "Snake", "Random", "Spiral", "Multilevel"]
-        layout_grid = ttk.Frame(q, style="P.TFrame")
-        layout_grid.pack(fill="x", pady=(0, 6))
-        self._layout_btns: Dict[str, tk.Button] = {}
-
-        def _select_layout(name):
-            self._v_layout.set(name)
-            for n, btn in self._layout_btns.items():
-                btn.config(bg=T["accent"] if n == name else T["bg_card"],
-                           fg=T["btn_fg"] if n == name else T["text_dim"],
-                           relief="flat")
-
-        for col, name in enumerate(layouts):
-            btn = tk.Button(layout_grid, text=name,
-                bg=T["accent"] if name == "Zigzag" else T["bg_card"],
-                fg=T["btn_fg"] if name == "Zigzag" else T["text_dim"],
-                font=("Segoe UI", 8, "bold"), relief="flat", cursor="hand2",
-                padx=4, pady=4, activebackground=T["lbx_sel"],
-                command=lambda n=name: _select_layout(n))
-            btn.grid(row=col // 3, column=col % 3, padx=2, pady=2, sticky="ew")
-            layout_grid.columnconfigure(col % 3, weight=1)
+        # Layout style
+        lay.addWidget(_sec_widget("Layout style"))
+        self._current_layout = "Zigzag"
+        layout_names = ["Linear", "Zigzag", "Snake", "Random", "Spiral", "Multilevel"]
+        layout_grid = QWidget()
+        lg = QGridLayout(layout_grid)
+        lg.setContentsMargins(0, 0, 0, 4)
+        lg.setSpacing(4)
+        self._layout_group = QButtonGroup(self)
+        self._layout_group.setExclusive(True)
+        self._layout_btns: Dict[str, QPushButton] = {}
+        for i, name in enumerate(layout_names):
+            btn = QPushButton(name)
+            btn.setCheckable(True)
+            btn.setChecked(name == "Zigzag")
+            btn.setObjectName("btnLayout")
+            btn.clicked.connect(lambda checked, n=name: self._select_layout(n))
+            self._layout_group.addButton(btn, i)
             self._layout_btns[name] = btn
+            lg.addWidget(btn, i // 3, i % 3)
+            lg.setColumnStretch(i % 3, 1)
+        lay.addWidget(layout_grid)
+        lay.addStretch()
+        return scroll
 
-    def _tab_textures(self, p):
-        tk.Label(p, text="F = use as Floor   W = Wall   C = Ceiling",
-                 bg=T["bg_panel"], fg=T["text_dim"], font=("Segoe UI", 7)).pack(anchor="w", pady=(0, 4))
+    def _select_layout(self, name: str):
+        self._current_layout = name
+        self._schedule_save()
 
-        outer = ttk.Frame(p, style="P.TFrame")
-        outer.pack(fill="both", expand=True)
-        outer.columnconfigure(0, weight=1)
-        outer.columnconfigure(1, weight=0)
-        outer.rowconfigure(0, weight=1)
+    def _tab_dbt_import(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(4)
 
-        list_f = ttk.Frame(outer, style="P.TFrame")
-        list_f.grid(row=0, column=0, sticky="nsew")
-        list_f.rowconfigure(0, weight=1)
-        list_f.columnconfigure(0, weight=1)
+        lay.addWidget(_sec_widget("Source .rbe file"))
+        file_row = QWidget()
+        fr = QHBoxLayout(file_row)
+        fr.setContentsMargins(0, 0, 0, 8)
+        fr.setSpacing(4)
+        self._edit_rbe_path = QLineEdit()
+        self._edit_rbe_path.setFont(QFont("Consolas", 8))
+        self._edit_rbe_path.textChanged.connect(self._schedule_save)
+        btn_rbe = QPushButton("…")
+        btn_rbe.setFixedWidth(32)
+        btn_rbe.clicked.connect(self._browse_rbe)
+        fr.addWidget(self._edit_rbe_path)
+        fr.addWidget(btn_rbe)
+        lay.addWidget(file_row)
 
-        self._tex_canvas = tk.Canvas(list_f, bg=T["lbx_bg"], highlightthickness=0)
-        vsb = ttk.Scrollbar(list_f, orient="vertical", command=self._tex_canvas.yview)
-        self._tex_canvas.configure(yscrollcommand=vsb.set)
-        vsb.grid(row=0, column=1, sticky="ns")
-        self._tex_canvas.grid(row=0, column=0, sticky="nsew")
+        # Map output name (auto-filled from RBE filename on browse)
+        rname_row = QWidget()
+        rnr = QHBoxLayout(rname_row)
+        rnr.setContentsMargins(0, 0, 0, 8)
+        rnr.setSpacing(6)
+        lbl_rn = QLabel("Map name:")
+        lbl_rn.setObjectName("dimLabel")
+        self._edit_map_name_rbe = QLineEdit("imported")
+        self._edit_map_name_rbe.setPlaceholderText("imported")
+        suf_r = QLabel(".map")
+        suf_r.setObjectName("dimLabel")
+        rnr.addWidget(lbl_rn)
+        rnr.addWidget(self._edit_map_name_rbe, stretch=1)
+        rnr.addWidget(suf_r)
+        lay.addWidget(rname_row)
 
-        self._tex_inner = tk.Frame(self._tex_canvas, bg=T["lbx_bg"])
-        self._tex_canvas_win = self._tex_canvas.create_window((0, 0), window=self._tex_inner, anchor="nw")
+        lay.addWidget(_sec_widget("Scale (Quake units per block)"))
+        sc_row = QWidget()
+        sr = QHBoxLayout(sc_row)
+        sr.setContentsMargins(0, 0, 0, 8)
+        sr.setSpacing(6)
+        # 1:1 defaults: DBT block = 40×20×40 (X×Y_height×Z)
+        # sx = 40 × 2.4 = 96  (DBT-X  → Q3-X)
+        # sy = 40 × 2.4 = 96  (DBT-Z  → Q3-Y)
+        # sz = 20 × 2.2 = 44  (DBT-Y height → Q3-Z)
+        self._spin_rbe_sx = QSpinBox(); self._spin_rbe_sx.setRange(1, 512); self._spin_rbe_sx.setValue(96)
+        self._spin_rbe_sy = QSpinBox(); self._spin_rbe_sy.setRange(1, 512); self._spin_rbe_sy.setValue(96)
+        self._spin_rbe_sz = QSpinBox(); self._spin_rbe_sz.setRange(1, 512); self._spin_rbe_sz.setValue(44)
+        for lbl_txt, sb in [("X:", self._spin_rbe_sx), ("Y:", self._spin_rbe_sy),
+                             ("Z (height):", self._spin_rbe_sz)]:
+            sr.addWidget(QLabel(lbl_txt))
+            sr.addWidget(sb)
+            sb.valueChanged.connect(self._schedule_save)
+        lay.addWidget(sc_row)
 
-        self._tex_inner.bind("<Configure>",
-            lambda e: self._tex_canvas.configure(scrollregion=self._tex_canvas.bbox("all")))
-        self._tex_canvas.bind("<Configure>",
-            lambda e: self._tex_canvas.itemconfig(self._tex_canvas_win, width=e.width))
-        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-            self._tex_canvas.bind(seq, self._on_tex_scroll)
+        hint_scale = QLabel("Defaults — x×2.4  y×2.4  z(height)×2.2  →  96 / 96 / 44  |  angles: degrees")
+        hint_scale.setObjectName("dimLabel")
+        lay.addWidget(hint_scale)
 
-        prev_f = tk.Frame(outer, bg=T["bg_card"], padx=6, pady=6)
-        prev_f.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-        tk.Label(prev_f, text="Preview", bg=T["bg_card"], fg=T["accent"],
-                 font=("Segoe UI", 9, "bold")).pack()
-        self._prev_lbl = tk.Label(prev_f, bg=T["bg_card"], width=16, height=8,
-                                  text="\u2014", fg=T["text_dim"], font=("Segoe UI", 8))
-        self._prev_lbl.pack(pady=4)
-        self._prev_name = tk.Label(prev_f, bg=T["bg_card"], fg=T["text_dim"],
-                                   font=("Consolas", 6), wraplength=120, text="")
-        self._prev_name.pack()
+        lay.addWidget(_sec_widget("Actions"))
+        btn_import = QPushButton("Import")
+        btn_import.setObjectName("btnGenerate")
+        btn_import.clicked.connect(self._on_import_rbe)
+        lay.addWidget(btn_import)
+        lay.addStretch()
+        return w
+
+    def _tab_textures(self) -> QWidget:
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(6)
+
+        # Left: scrollable texture list
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        list_inner = QWidget()
+        list_inner.setStyleSheet(f"background-color: {T['lbx_bg']};")
+        self._tex_list_lay = QVBoxLayout(list_inner)
+        self._tex_list_lay.setContentsMargins(2, 2, 2, 2)
+        self._tex_list_lay.setSpacing(1)
+        self._tex_list_lay.addStretch()
+        scroll.setWidget(list_inner)
+        lay.addWidget(scroll, stretch=1)
+
+        hint = QLabel("F = use as Floor\nW = Wall\nC = Ceiling")
+        hint.setObjectName("dimLabel")
+        hint.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        # Right: preview panel
+        prev_card = QWidget()
+        prev_card.setObjectName("prevCard")
+        prev_card.setFixedWidth(140)
+        pc_lay = QVBoxLayout(prev_card)
+        pc_lay.setContentsMargins(8, 8, 8, 8)
+        pc_lay.setSpacing(4)
+        prev_hdr = QLabel("Preview")
+        prev_hdr.setObjectName("secLabel")
+        prev_hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pc_lay.addWidget(prev_hdr)
+        self._prev_lbl = QLabel()
+        self._prev_lbl.setFixedSize(120, 120)
+        self._prev_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._prev_lbl.setStyleSheet(f"background-color: {T['bg_input']}; color: {T['text_dim']};")
+        self._prev_lbl.setText("—")
+        pc_lay.addWidget(self._prev_lbl)
+        self._prev_name = QLabel("")
+        self._prev_name.setObjectName("dimLabel")
+        self._prev_name.setWordWrap(True)
+        self._prev_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pc_lay.addWidget(self._prev_name)
+        pc_lay.addWidget(hint)
+        pc_lay.addStretch()
+
+        right_w = QWidget()
+        rv = QVBoxLayout(right_w)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.addWidget(prev_card)
+        lay.addWidget(right_w)
+
         self._populate_tex_list()
-
-    def _on_tex_scroll(self, e):
-        if e.num == 4:
-            self._tex_canvas.yview_scroll(-1, "units")
-        elif e.num == 5:
-            self._tex_canvas.yview_scroll(1, "units")
-        else:
-            self._tex_canvas.yview_scroll(-1 * (e.delta // 120), "units")
+        return w
 
     def _populate_tex_list(self):
-        for w in self._tex_inner.winfo_children():
-            w.destroy()
-        for tex in ALL_TEXTURES:
-            self._floor_sel.setdefault(tex, tk.BooleanVar(value=(tex in FLOOR_TEX)))
-            self._wall_sel.setdefault(tex, tk.BooleanVar(value=(tex in WALL_TEX)))
-            self._ceil_sel.setdefault(tex, tk.BooleanVar(value=(tex in CEIL_TEX)))
-        for tex_name in sorted(ALL_TEXTURES.keys()):
-            row = tk.Frame(self._tex_inner, bg=T["lbx_bg"])
-            row.pack(fill="x")
-            thumb = tk.Label(row, bg=T["lbx_bg"], width=2, height=1, text=" ")
-            thumb.pack(side="left")
-            self._load_thumb(tex_name, thumb, size=16)
-            name_btn = tk.Button(row, text=tex_name, bg=T["lbx_bg"], fg=T["text"],
-                font=("Consolas", 7), relief="flat", anchor="w", cursor="hand2",
-                activebackground=T["lbx_sel"], activeforeground=T["accent"],
-                command=lambda t=tex_name: self._show_tex_preview(t))
-            name_btn.pack(side="left", fill="x", expand=True)
-            for label, color, sel_dict in [
-                ("F", T["success"], self._floor_sel),
-                ("W", T["accent2"], self._wall_sel),
-                ("C", T["accent"],  self._ceil_sel),
-            ]:
-                ck = tk.Checkbutton(row, text=label, variable=sel_dict[tex_name],
-                    bg=T["lbx_bg"], fg=color, selectcolor=T["bg_card"],
-                    activebackground=T["lbx_bg"], font=("Segoe UI", 7),
-                    relief="flat", cursor="hand2", command=self._update_tex_lists)
-                ck.pack(side="left")
+        # Clear existing rows (keep trailing stretch)
+        while self._tex_list_lay.count() > 1:
+            item = self._tex_list_lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 
-    def _load_thumb(self, tex_name, lbl, size=16):
+        for tex_name in sorted(ALL_TEXTURES.keys()):
+            row = QWidget()
+            row.setObjectName("texRow")
+            row.setFixedHeight(22)
+            rh = QHBoxLayout(row)
+            rh.setContentsMargins(2, 0, 2, 0)
+            rh.setSpacing(2)
+
+            # Thumbnail
+            thumb = QLabel()
+            thumb.setFixedSize(16, 16)
+            thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            rh.addWidget(thumb)
+            self._load_thumb_qt(tex_name, thumb, 16)
+
+            # Name button
+            name_btn = QPushButton(tex_name)
+            name_btn.setFlat(True)
+            name_btn.setStyleSheet(
+                f"text-align:left; color:{T['text']}; font-family:Consolas; font-size:7pt;"
+                f" background:transparent; border:none;")
+            name_btn.clicked.connect(lambda _, t=tex_name: self._show_tex_preview(t))
+            rh.addWidget(name_btn, stretch=1)
+
+            # F/W/C checkboxes
+            floor_cb = QCheckBox("F")
+            floor_cb.setStyleSheet(f"color:{T['success']}; font-size:7pt;")
+            floor_cb.setChecked(tex_name in FLOOR_TEX)
+
+            wall_cb = QCheckBox("W")
+            wall_cb.setStyleSheet(f"color:{T['accent2']}; font-size:7pt;")
+            wall_cb.setChecked(tex_name in WALL_TEX)
+
+            ceil_cb = QCheckBox("C")
+            ceil_cb.setStyleSheet(f"color:{T['accent']}; font-size:7pt;")
+            ceil_cb.setChecked(tex_name in CEIL_TEX)
+
+            for cb in (floor_cb, wall_cb, ceil_cb):
+                cb.stateChanged.connect(self._update_tex_lists)
+                rh.addWidget(cb)
+
+            self._tex_cbs[tex_name] = (floor_cb, wall_cb, ceil_cb)
+            self._tex_list_lay.insertWidget(self._tex_list_lay.count() - 1, row)
+
+    def _load_thumb_qt(self, tex_name: str, lbl: QLabel, size: int = 16):
         if not PIL_OK:
+            return
+        cached = self._tex_pixmaps.get(f"{tex_name}_{size}")
+        if cached:
+            lbl.setPixmap(cached)
             return
         path = self._tex_paths.get(tex_name) or self._find_tex_file(tex_name)
         if not path:
@@ -452,14 +1185,19 @@ class App(tk.Tk):
         try:
             img = Image.open(path).convert("RGBA")
             img.thumbnail((size, size))
-            tk_img = ImageTk.PhotoImage(img)
-            lbl.config(image=tk_img, text="", width=size)
-            self._thumb_refs[f"{tex_name}_{size}"] = tk_img
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            qimg = QImage.fromData(buf.getvalue())
+            pm = QPixmap.fromImage(qimg)
+            self._tex_pixmaps[f"{tex_name}_{size}"] = pm
+            lbl.setPixmap(pm)
         except Exception:
             pass
 
-    def _find_tex_file(self, tex_name) -> Optional[str]:
-        folder = self._tex_folder.get()
+    def _find_tex_file(self, tex_name: str) -> Optional[str]:
+        if not hasattr(self, '_edit_tex_folder'):
+            return None
+        folder = self._edit_tex_folder.text()
         if not folder or not os.path.isdir(folder):
             return None
         base = tex_name.split("/")[-1]
@@ -472,412 +1210,335 @@ class App(tk.Tk):
                     return fp
         return None
 
-    def _show_tex_preview(self, tex_name):
-        self._prev_name.config(text=tex_name)
+    def _show_tex_preview(self, tex_name: str):
+        self._prev_name.setText(tex_name)
         if not PIL_OK:
-            self._prev_lbl.config(image="", text="pip install pillow", fg=T["warning"])
+            self._prev_lbl.setText("pip install\npillow")
             return
         path = self._tex_paths.get(tex_name) or self._find_tex_file(tex_name)
         if not path:
-            self._prev_lbl.config(image="", text="No image\n(set folder)", fg=T["text_dim"])
+            self._prev_lbl.setText("No image\n(set folder)")
             return
         try:
             img = Image.open(path).convert("RGBA")
-            img.thumbnail((128, 128))
-            tk_img = ImageTk.PhotoImage(img)
-            self._prev_lbl.config(image=tk_img, text="", width=128, height=128)
-            self._thumb_refs["preview"] = tk_img
+            img.thumbnail((120, 120))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            qimg = QImage.fromData(buf.getvalue())
+            pm = QPixmap.fromImage(qimg)
+            self._prev_lbl.setPixmap(pm)
+            self._prev_lbl.setText("")
         except Exception as ex:
-            self._prev_lbl.config(image="", text=f"Error:\n{ex}", fg=T["warning"])
-
-    def _browse_tex_folder(self):
-        d = filedialog.askdirectory(title="Select texture folder")
-        if d:
-            self._tex_folder.set(d)
-            self._tex_paths.clear()
-            self._status.config(text="Scanning texture folder\u2026")
-            threading.Thread(target=self._scan_tex_folder, args=(d,), daemon=True).start()
-
-    def _scan_tex_folder(self, folder):
-        found = {}
-        for root_d, _, files in os.walk(folder):
-            for fn in files:
-                nm, ext = os.path.splitext(fn)
-                if ext.lower() not in IMG_EXTS:
-                    continue
-                for tex in ALL_TEXTURES:
-                    base = tex.split("/")[-1]
-                    if nm.lower() == base.lower():
-                        found[tex] = os.path.join(root_d, fn)
-        self._tex_paths.update(found)
-        self.after(0, lambda: self._status.config(text=f"Scan complete \u2014 {len(found)} textures matched"))
-        self.after(0, self._refresh_thumbs)
-
-    def _refresh_thumbs(self):
-        if not PIL_OK:
-            return
-        for row in self._tex_inner.winfo_children():
-            ch = row.winfo_children()
-            if len(ch) < 2:
-                continue
-            thumb_lbl = ch[0]
-            name_btn  = ch[1]
-            tex_name  = name_btn.cget("text")
-            if tex_name in ALL_TEXTURES:
-                self._load_thumb(tex_name, thumb_lbl, size=16)
+            self._prev_lbl.setText(f"Error:\n{ex}")
 
     def _update_tex_lists(self):
         FLOOR_TEX.clear()
-        FLOOR_TEX.extend([t for t, v in self._floor_sel.items() if v.get()])
         WALL_TEX.clear()
-        WALL_TEX.extend([t for t, v in self._wall_sel.items()  if v.get()])
         CEIL_TEX.clear()
-        CEIL_TEX.extend([t for t, v in self._ceil_sel.items()  if v.get()])
+        for tex_name, (f_cb, w_cb, c_cb) in self._tex_cbs.items():
+            if f_cb.isChecked(): FLOOR_TEX.append(tex_name)
+            if w_cb.isChecked(): WALL_TEX.append(tex_name)
+            if c_cb.isChecked(): CEIL_TEX.append(tex_name)
         if not FLOOR_TEX: FLOOR_TEX.append("turnt/turnt_concrete")
         if not WALL_TEX:  WALL_TEX.append("turnt/turnt_tech")
         if not CEIL_TEX:  CEIL_TEX.append("turnt/turnt_sky")
+        self._schedule_save()
 
-    def _tab_settings(self, p):
-        def _path_row(parent, label, var, browse_cmd):
-            self._sec(parent, label)
-            row = ttk.Frame(parent, style="P.TFrame")
-            row.pack(fill="x", pady=(0, 8))
-            ttk.Entry(row, textvariable=var, font=("Consolas", 8)).pack(side="left", fill="x", expand=True)
-            self._btn(row, "\u2026", browse_cmd, w=4, color=T["accent2"]).pack(side="left", padx=(6, 0))
+    def _tab_settings(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(4)
 
-        _path_row(p, "Output .map file", self._out_path, self._browse_out)
-        _path_row(p, "Texture folder (for preview)", self._tex_folder, self._browse_tex_folder)
-        _path_row(p, "Game executable", self._game_exe, self._browse_game_exe)
+        def path_row(title, attr, browse_fn):
+            lay.addWidget(_sec_widget(title))
+            row = QWidget()
+            rh = QHBoxLayout(row)
+            rh.setContentsMargins(0, 0, 0, 8)
+            rh.setSpacing(4)
+            edit = QLineEdit()
+            edit.setFont(QFont("Consolas", 8))
+            edit.textChanged.connect(self._schedule_save)
+            setattr(self, attr, edit)
+            btn = QPushButton("…")
+            btn.setFixedWidth(32)
+            btn.clicked.connect(browse_fn)
+            rh.addWidget(edit)
+            rh.addWidget(btn)
+            lay.addWidget(row)
 
-        self._sec(p, "Preview")
-        self._v_prev_labels = tk.BooleanVar(value=True)
-        self._v_prev_hmap   = tk.BooleanVar(value=True)
-        self._v_prev_ramps  = tk.BooleanVar(value=True)
-        for text, var in [
-            ("Show room numbers", self._v_prev_labels),
-            ("Show heightmap bar", self._v_prev_hmap),
-            ("Show ramps in 3D preview", self._v_prev_ramps),
-        ]:
-            ttk.Checkbutton(p, text=text, variable=var).pack(anchor="w", pady=1)
+        path_row("Output folder",                "_edit_out_folder",  self._browse_out_folder)
+        path_row("Texture folder (for preview)", "_edit_tex_folder", self._browse_tex_folder)
+        path_row("Game executable",            "_edit_game_exe",    self._browse_game_exe)
 
-    def _tab_dbt_import(self, p):
-        self._sec(p, "Source .rbe file")
-        file_row = ttk.Frame(p, style="P.TFrame")
-        file_row.pack(fill="x", pady=(0, 8))
-        self._v_rbe_path = tk.StringVar(value="")
-        ttk.Entry(file_row, textvariable=self._v_rbe_path,
-                  font=("Consolas", 8)).pack(side="left", fill="x", expand=True)
-        def _browse_rbe():
-            path_ = filedialog.askopenfilename(
-                title="Open Diabotical map",
-                filetypes=[("Diabotical Map", "*.rbe"), ("All files", "*.*")])
-            if path_:
-                self._v_rbe_path.set(path_)
-        self._btn(file_row, "\u2026", _browse_rbe, w=4, color=T["accent2"]).pack(side="left", padx=(6, 0))
+        lay.addWidget(_sec_widget("Preview"))
+        self._chk_prev_labels = QCheckBox("Show room numbers")
+        self._chk_prev_labels.setChecked(True)
+        self._chk_prev_labels.stateChanged.connect(self._schedule_save)
+        self._chk_prev_hmap = QCheckBox("Show heightmap bar")
+        self._chk_prev_hmap.setChecked(True)
+        self._chk_prev_hmap.stateChanged.connect(self._schedule_save)
+        self._chk_prev_ramps = QCheckBox("Show ramps in 3D preview")
+        self._chk_prev_ramps.setChecked(True)
+        self._chk_prev_ramps.stateChanged.connect(self._schedule_save)
+        lay.addWidget(self._chk_prev_labels)
+        lay.addWidget(self._chk_prev_hmap)
+        lay.addWidget(self._chk_prev_ramps)
 
-        self._sec(p, "Scale (Quake units per block)")
-        sc_row = ttk.Frame(p, style="P.TFrame")
-        sc_row.pack(fill="x", pady=(0, 8))
-        self._v_rbe_sx = tk.IntVar(value=48)
-        self._v_rbe_sy = tk.IntVar(value=48)
-        self._v_rbe_sz = tk.IntVar(value=42)
-        for lbl, var in [("X:", self._v_rbe_sx), ("Y:", self._v_rbe_sy),
-                          ("Z (height):", self._v_rbe_sz)]:
-            ttk.Label(sc_row, text=lbl, style="P.TLabel").pack(side="left")
-            self._spinbox(sc_row, var, 1, 512, 1, pack=False).pack(side="left", padx=(2, 12))
+        lay.addWidget(_sec_widget("Appearance"))
+        theme_row = QWidget()
+        tr = QHBoxLayout(theme_row)
+        tr.setContentsMargins(0, 4, 0, 4)
+        tr.setSpacing(8)
+        lbl_theme = QLabel("Theme")
+        lbl_theme.setObjectName("dimLabel")
+        self._theme_toggle = ThemeToggle(dark=True)
+        self._theme_toggle.toggled.connect(self._apply_theme)
+        tr.addWidget(lbl_theme)
+        tr.addStretch()
+        tr.addWidget(self._theme_toggle)
+        lay.addWidget(theme_row)
 
-        self._sec(p, "Actions")
-        self._btn(p, "Import & Convert", self._on_import_rbe,
-                  color=T["accent"], font=("Segoe UI", 11, "bold")).pack(fill="x", pady=(0, 8))
+        lay.addStretch()
 
-    # ── RIGHT PANEL ───────────────────────────────────────────────────────
-    def _build_right(self, p):
-        pc = ttk.Frame(p, style="P.TFrame")
-        pc.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
-        pc.rowconfigure(2, weight=1)
-        pc.columnconfigure(0, weight=1)
+        # Default output folder
+        self._edit_out_folder.setText(os.path.join(os.getcwd(), "maps"))
+        return w
 
-        ph = ttk.Frame(pc, style="P.TFrame", padding=(10, 4))
-        ph.grid(row=0, column=0, sticky="ew")
-        ttk.Label(ph, text="MAP PREVIEW", style="H2.TLabel").pack(side="left")
-        self._lbl_stats = ttk.Label(ph, text="", style="Pd.TLabel", font=("Segoe UI", 8))
-        self._lbl_stats.pack(side="right")
+    # ── Right panel ───────────────────────────────────────────────────────
+    def _build_right(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
 
-        leg = tk.Frame(pc, bg=T["bg_panel"], padx=10, pady=2)
-        leg.grid(row=1, column=0, sticky="ew")
-        for color, label in [
+        # Preview card
+        preview_card = QWidget()
+        pc_lay = QVBoxLayout(preview_card)
+        pc_lay.setContentsMargins(0, 0, 0, 0)
+        pc_lay.setSpacing(4)
+
+        # Header
+        ph = QWidget()
+        ph_lay = QHBoxLayout(ph)
+        ph_lay.setContentsMargins(8, 4, 8, 4)
+        lbl_prev = QLabel("MAP PREVIEW")
+        lbl_prev.setObjectName("mapPreviewHdr")
+        self._lbl_stats = QLabel("")
+        self._lbl_stats.setObjectName("statsLabel")
+        ph_lay.addWidget(lbl_prev)
+        ph_lay.addStretch()
+        ph_lay.addWidget(self._lbl_stats)
+        pc_lay.addWidget(ph)
+
+        # Legend
+        leg = QWidget()
+        leg_lay = QHBoxLayout(leg)
+        leg_lay.setContentsMargins(8, 2, 8, 2)
+        leg_lay.setSpacing(4)
+        for color_key, label in [
             (T["start_col"], "Start"), (T["room_col"], "Room"),
-            (T["end_col"], "End"),     (T["corr_col"], "Corridor"),
+            (T["end_col"],   "End"),   (T["corr_col"], "Corridor"),
         ]:
-            tk.Label(leg, bg=color, width=2, relief="flat").pack(side="left")
-            tk.Label(leg, text=f" {label}   ", bg=T["bg_panel"], fg=T["text_dim"],
-                     font=("Segoe UI", 7)).pack(side="left")
+            swatch = QLabel()
+            swatch.setFixedSize(14, 14)
+            swatch.setStyleSheet(f"background-color:{color_key}; border-radius:2px;")
+            lbl = QLabel(label)
+            lbl.setObjectName("dimLabel")
+            leg_lay.addWidget(swatch)
+            leg_lay.addWidget(lbl)
+            leg_lay.addSpacing(6)
+        leg_lay.addStretch()
+        pc_lay.addWidget(leg)
 
-        view_nb = ttk.Notebook(pc)
-        view_nb.grid(row=2, column=0, sticky="nsew", padx=6, pady=(0, 6))
+        # 2D / 3D tabs
+        view_tabs = QTabWidget()
+        self._view_tabs = view_tabs
 
-        tab2d = ttk.Frame(view_nb, style="P.TFrame")
-        view_nb.add(tab2d, text="  2D  ")
-        tab2d.rowconfigure(1, weight=1)
-        tab2d.columnconfigure(0, weight=1)
+        tab2d = QWidget()
+        t2_lay = QVBoxLayout(tab2d)
+        t2_lay.setContentsMargins(0, 0, 0, 0)
+        t2_lay.setSpacing(2)
+        bar2d = QWidget()
+        b2_lay = QHBoxLayout(bar2d)
+        b2_lay.setContentsMargins(4, 2, 4, 2)
+        btn_fit = QPushButton("Fit")
+        btn_fit.setObjectName("btnSmall")
+        btn_fit.clicked.connect(self._2d_fit)
+        hint2d = QLabel("  scroll=zoom  drag=pan  dbl-click=fit")
+        hint2d.setObjectName("dimLabel")
+        b2_lay.addWidget(btn_fit)
+        b2_lay.addWidget(hint2d)
+        b2_lay.addStretch()
+        t2_lay.addWidget(bar2d)
+        self._preview2d = Preview2DWidget()
+        t2_lay.addWidget(self._preview2d, stretch=1)
+        view_tabs.addTab(tab2d, "2D")
 
-        bar2d = ttk.Frame(tab2d, style="P.TFrame", padding=(4, 2))
-        bar2d.grid(row=0, column=0, sticky="ew")
-        self._btn(bar2d, "Fit", self._2d_fit, color=T["accent2"],
-                  font=("Segoe UI", 8, "bold"), pady=2).pack(side="left", padx=2)
-        tk.Label(bar2d, text="  scroll=zoom  drag=pan  dbl-click=fit",
-                 bg=T["bg_panel"], fg=T["text_dim"], font=("Segoe UI", 7)).pack(side="left", padx=6)
+        tab3d = QWidget()
+        t3_lay = QVBoxLayout(tab3d)
+        t3_lay.setContentsMargins(0, 0, 0, 0)
+        t3_lay.setSpacing(2)
+        bar3d = QWidget()
+        b3_lay = QHBoxLayout(bar3d)
+        b3_lay.setContentsMargins(4, 2, 4, 2)
+        for pname in ("Iso", "Top", "Front", "Side"):
+            pb = QPushButton(pname)
+            pb.setObjectName("btnSmall")
+            pb.clicked.connect(lambda _, n=pname: self._viewer3d.set_preset(n))
+            b3_lay.addWidget(pb)
+        hint3d = QLabel("  drag=rotate  scroll=zoom  WASD=pan (click 3D first)")
+        hint3d.setObjectName("dimLabel")
+        b3_lay.addWidget(hint3d)
+        b3_lay.addStretch()
+        t3_lay.addWidget(bar3d)
+        self._viewer3d = Viewer3DWidget()
+        t3_lay.addWidget(self._viewer3d, stretch=1)
+        view_tabs.addTab(tab3d, "3D")
 
-        self._canvas = tk.Canvas(tab2d, bg=T["prev_bg"], highlightthickness=0)
-        self._canvas.grid(row=1, column=0, sticky="nsew")
-        self._canvas.bind("<Configure>",       lambda e: self._redraw())
-        self._canvas.bind("<MouseWheel>",      self._2d_on_scroll)
-        self._canvas.bind("<Button-4>",        self._2d_on_scroll)
-        self._canvas.bind("<Button-5>",        self._2d_on_scroll)
-        self._canvas.bind("<ButtonPress-1>",   self._2d_pan_start)
-        self._canvas.bind("<B1-Motion>",       self._2d_pan_move)
-        self._canvas.bind("<Double-Button-1>", lambda e: self._2d_fit())
-        self._2d_zoom  = 1.0
-        self._2d_pan_x = 0.0
-        self._2d_pan_y = 0.0
-        self._2d_drag_x = 0
-        self._2d_drag_y = 0
+        view_tabs.currentChanged.connect(self._on_view_tab_changed)
+        pc_lay.addWidget(view_tabs, stretch=1)
+        lay.addWidget(preview_card, stretch=3)
 
-        tab3d = ttk.Frame(view_nb, style="P.TFrame")
-        view_nb.add(tab3d, text="  3D  ")
-        tab3d.rowconfigure(1, weight=1)
-        tab3d.columnconfigure(0, weight=1)
+        # Log section
+        log_card = QWidget()
+        lc_lay = QVBoxLayout(log_card)
+        lc_lay.setContentsMargins(0, 0, 0, 0)
+        lc_lay.setSpacing(2)
 
-        btn_bar = ttk.Frame(tab3d, style="P.TFrame", padding=(4, 3))
-        btn_bar.grid(row=0, column=0, sticky="ew")
-        self._viewer3d = Viewer3D(tab3d)
-        self._viewer3d.grid(row=1, column=0, sticky="nsew")
+        log_hdr = QWidget()
+        lh_lay = QHBoxLayout(log_hdr)
+        lh_lay.setContentsMargins(8, 4, 8, 4)
+        log_lbl = QLabel("LOG")
+        log_lbl.setObjectName("logHdr")
+        btn_clear = QPushButton("Clear")
+        btn_clear.setObjectName("btnSmall")
+        btn_clear.clicked.connect(self._clear_log)
+        lh_lay.addWidget(log_lbl)
+        lh_lay.addStretch()
+        lh_lay.addWidget(btn_clear)
+        lc_lay.addWidget(log_hdr)
 
-        for preset_name in ("Iso", "Top", "Front", "Side"):
-            self._btn(btn_bar, preset_name,
-                      lambda n=preset_name: self._viewer3d.set_preset(n),
-                      color=T["accent2"], font=("Segoe UI", 8, "bold"), pady=2).pack(side="left", padx=2)
-        tk.Label(btn_bar, text="  drag=rotate  scroll=zoom  WASD=pan (click 3D first)",
-                 bg=T["bg_panel"], fg=T["text_dim"], font=("Segoe UI", 7)).pack(side="left", padx=6)
+        self._logbox = QPlainTextEdit()
+        self._logbox.setReadOnly(True)
+        self._logbox.setMaximumBlockCount(500)
+        lc_lay.addWidget(self._logbox, stretch=1)
+        lay.addWidget(log_card, stretch=1)
+        return w
 
-        view_nb.bind("<<NotebookTabChanged>>", lambda e: self._on_tab_change(view_nb))
-        self._view_nb = view_nb
+    # ── Config ────────────────────────────────────────────────────────────
+    def _restore_config(self):
+        cfg = load_app_cfg()
+        if cfg.get("tex_folder"):
+            self._edit_tex_folder.setText(cfg["tex_folder"])
+            folder = cfg["tex_folder"]
+            if os.path.isdir(folder):
+                threading.Thread(
+                    target=self._scan_tex_folder, args=(folder,), daemon=True
+                ).start()
+        if cfg.get("game_exe"):     self._edit_game_exe.setText(cfg["game_exe"])
+        if cfg.get("rbe_path"):
+            self._edit_rbe_path.setText(cfg["rbe_path"])
+            # Restore rbe map name only if explicitly saved; else keep auto-default
+            if cfg.get("map_name_rbe"):
+                self._edit_map_name_rbe.setText(cfg["map_name_rbe"])
+        if cfg.get("map_name_gen"): self._edit_map_name_gen.setText(cfg["map_name_gen"])
+        # out_folder (new) with fallback to legacy out_path directory
+        if cfg.get("out_folder"):
+            self._edit_out_folder.setText(cfg["out_folder"])
+        elif cfg.get("out_path"):
+            self._edit_out_folder.setText(os.path.dirname(cfg["out_path"]))
+        if cfg.get("rbe_sx"):       self._spin_rbe_sx.setValue(cfg["rbe_sx"])
+        if cfg.get("rbe_sy"):       self._spin_rbe_sy.setValue(cfg["rbe_sy"])
+        # Restore sz only if it looks intentionally set (>= 40); old configs had
+        # stale values of 42 or 22 that were wrong defaults — skip those.
+        if cfg.get("rbe_sz") and cfg["rbe_sz"] >= 40:
+            self._spin_rbe_sz.setValue(cfg["rbe_sz"])
+        if cfg.get("n_rooms"):      self._slider_rooms.setValue(cfg["n_rooms"])
+        if cfg.get("layout"):
+            self._current_layout = cfg["layout"]
+            for name, btn in self._layout_btns.items():
+                btn.setChecked(name == cfg["layout"])
+        if cfg.get("corr_frac") is not None:
+            self._slider_corr.setValue(int(cfg["corr_frac"] * 100))
+        if cfg.get("height_var") is not None:
+            self._chk_height.setChecked(cfg["height_var"])
+        if cfg.get("checkpoints") is not None:
+            self._chk_checks.setChecked(cfg["checkpoints"])
+        if cfg.get("use_physics") is not None:
+            self._chk_physics.setChecked(cfg["use_physics"])
+        for lbl in ("Min W", "Max W", "Min D", "Max D", "Min H", "Max H"):
+            key = f"sz_{lbl}"
+            if key in cfg:
+                self._sz[lbl].setValue(cfg[key])
+        for attr in ("_spin_u_base", "_spin_u_gain", "_spin_t_air",
+                     "_spin_strafe_f", "_spin_rpt"):
+            if attr in cfg and hasattr(self, attr):
+                getattr(self, attr).setValue(cfg[attr])
+        if cfg.get("prev_labels") is not None:
+            self._chk_prev_labels.setChecked(cfg["prev_labels"])
+        if cfg.get("prev_hmap") is not None:
+            self._chk_prev_hmap.setChecked(cfg["prev_hmap"])
+        if cfg.get("prev_ramps") is not None:
+            self._chk_prev_ramps.setChecked(cfg["prev_ramps"])
+        if "dark_mode" in cfg:
+            dark = bool(cfg["dark_mode"])
+            self._theme_toggle.set_dark(dark, animate=False)
+            self._apply_theme(dark)
 
-        lc = ttk.Frame(p, style="P.TFrame")
-        lc.grid(row=1, column=0, sticky="nsew")
-        lc.rowconfigure(1, weight=1)
-        lc.columnconfigure(0, weight=1)
-
-        lh = ttk.Frame(lc, style="P.TFrame", padding=(10, 5))
-        lh.grid(row=0, column=0, sticky="ew")
-        ttk.Label(lh, text="LOG", style="H2.TLabel").pack(side="left")
-        self._btn(lh, "Clear", self._clear_log, color=T["accent2"],
-                  font=("Segoe UI", 8), pady=2).pack(side="right")
-
-        self._logbox = scrolledtext.ScrolledText(lc, height=7,
-            bg=T["bg_input"], fg=T["text_dim"], font=("Consolas", 9),
-            relief="flat", insertbackground=T["text"], wrap="word",
-            state="disabled", borderwidth=0)
-        self._logbox.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
-        self._logbox.tag_config("info",  foreground=T["success"])
-        self._logbox.tag_config("warn",  foreground=T["warning"])
-        self._logbox.tag_config("error", foreground=T["accent"])
-
-    def _on_tab_change(self, nb):
-        try:
-            if nb.tab(nb.select(), "text").strip() == "3D" and self._rooms:
-                self._viewer3d.load(
-                    self._rooms, self._bridges,
-                    show_labels=(self._v_prev_labels.get() and not self._is_rbe_import))
-        except Exception:
-            pass
-
-    # ── 2D zoom/pan ───────────────────────────────────────────────────────
-    def _2d_on_scroll(self, e):
-        if e.num == 4 or e.delta > 0:
-            factor = 1.15
-        else:
-            factor = 1.0 / 1.15
-        self._2d_zoom = max(0.05, min(self._2d_zoom * factor, 80.0))
-        self._redraw()
-
-    def _2d_pan_start(self, e):
-        self._2d_drag_x = e.x
-        self._2d_drag_y = e.y
-
-    def _2d_pan_move(self, e):
-        dx = e.x - self._2d_drag_x
-        dy = e.y - self._2d_drag_y
-        self._2d_pan_x += dx
-        self._2d_pan_y += dy
-        self._2d_drag_x = e.x
-        self._2d_drag_y = e.y
-        self._redraw()
-
-    def _2d_fit(self):
-        self._2d_zoom  = 1.0
-        self._2d_pan_x = 0.0
-        self._2d_pan_y = 0.0
-        self._redraw()
-
-    # ── UI helpers ────────────────────────────────────────────────────────
-    def _btn(self, parent, text, cmd, color=None, font=None, w=None, pady=4):
-        color = color or T["accent"]
-        font  = font  or ("Segoe UI", 9, "bold")
-        kw = dict(text=text, command=cmd, bg=color, fg=T["btn_fg"],
-                  activebackground=color, activeforeground=T["btn_fg"],
-                  relief="flat", cursor="hand2", font=font, padx=10, pady=pady, bd=0)
-        if w:
-            kw["width"] = w
-        b = tk.Button(parent, **kw)
-        lit = self._lighten(color, .18)
-        b.bind("<Enter>", lambda e: b.config(bg=lit))
-        b.bind("<Leave>", lambda e: b.config(bg=color))
-        return b
-
-    @staticmethod
-    def _lighten(hx, f):
-        hx = hx.lstrip("#")
-        r, g, b = (int(hx[i:i+2], 16) for i in (0, 2, 4))
-        return "#{:02x}{:02x}{:02x}".format(
-            min(255, int(r + (255 - r) * f)),
-            min(255, int(g + (255 - g) * f)),
-            min(255, int(b + (255 - b) * f)))
-
-    def _sec(self, p, text):
-        f = ttk.Frame(p, style="P.TFrame")
-        f.pack(fill="x", pady=(8, 3))
-        ttk.Label(f, text=text, style="H2.TLabel").pack(side="left")
-        ttk.Separator(f, orient="horizontal").pack(side="left", fill="x", expand=True, padx=(8, 0))
-
-    def _slider(self, p, label, var, lo, hi, step=1):
-        row = ttk.Frame(p, style="P.TFrame")
-        row.pack(fill="x", pady=(0, 2))
-        ttk.Label(row, text=label, style="P.TLabel", font=("Segoe UI", 9)).pack(side="left")
-        vl = ttk.Label(row, text=str(var.get()), style="P.TLabel",
-                       foreground=T["accent"], font=("Consolas", 9, "bold"))
-        vl.pack(side="right")
-        def ch(v):
-            sv = round(float(v) / step) * step
-            var.set(int(sv))
-            vl.config(text=str(sv))
-        ttk.Scale(p, from_=lo, to=hi, variable=var,
-                  orient="horizontal", command=ch).pack(fill="x", pady=(0, 8))
-
-    def _spinbox(self, parent, var, lo, hi, inc, state="normal", pack=True):
-        sb = tk.Spinbox(parent, textvariable=var,
-            from_=lo, to=hi, increment=inc, width=8,
-            bg=T["bg_input"], fg=T["text"], insertbackground=T["text"],
-            relief="flat", font=("Consolas", 9), buttonbackground=T["bg_card"],
-            state=state, disabledforeground=T["text_dim"],
-            disabledbackground=T["bg_input"])
-        if pack:
-            sb.pack(fill="x")
-        return sb
-
-    def _toggle_physics(self):
-        st = "normal" if self._v_use_physics.get() else "disabled"
-        for sb in self._phy_widgets:
-            sb.config(state=st)
-
-    def _toggle_autorand(self):
-        self._v_autorand.set(not self._v_autorand.get())
-        is_auto = self._v_autorand.get()
-        self._auto_btn.config(bg=T["accent2"] if is_auto else T["bg_card"])
-        self._seed_spin.config(state="readonly" if is_auto else "normal")
-
-    def _randomize_seed(self, silent=False):
-        if not self._v_autorand.get():
-            return
-        s = random.randint(0, 9_999_999)
-        self._v_seed.set(s)
-        if not silent:
-            self._log(f"Seed \u2192 {s}", "info")
-
-    def _browse_out(self):
-        p = filedialog.asksaveasfilename(
-            defaultextension=".map",
-            filetypes=[("Quake Map", "*.map"), ("All", "*.*")],
-            initialfile=os.path.basename(self._out_path.get()))
-        if p:
-            self._out_path.set(p)
+    def _schedule_save(self, *_):
+        self._save_timer.start()
 
     def _flush_settings(self):
-        self._cfg_save_pending = False
         d = {
-            "out_path": self._out_path.get(), "tex_folder": self._tex_folder.get(),
-            "game_exe": self._game_exe.get(), "rbe_path": self._v_rbe_path.get(),
-            "rbe_sx": self._v_rbe_sx.get(), "rbe_sy": self._v_rbe_sy.get(),
-            "rbe_sz": self._v_rbe_sz.get(), "n_rooms": self._v_rooms.get(),
-            "layout": self._v_layout.get(), "corr_frac": self._v_corr_frac.get(),
-            "height_var": self._v_height.get(), "checkpoints": self._v_checks.get(),
-            "use_physics": self._v_use_physics.get(),
-            "prev_labels": self._v_prev_labels.get(),
-            "prev_hmap": self._v_prev_hmap.get(), "prev_ramps": self._v_prev_ramps.get(),
+            "out_folder":   self._edit_out_folder.text(),
+            "map_name_gen": self._edit_map_name_gen.text(),
+            "map_name_rbe": self._edit_map_name_rbe.text(),
+            "tex_folder":   self._edit_tex_folder.text(),
+            "game_exe":     self._edit_game_exe.text(),
+            "rbe_path":     self._edit_rbe_path.text(),
+            "rbe_sx":       self._spin_rbe_sx.value(),
+            "rbe_sy":       self._spin_rbe_sy.value(),
+            "rbe_sz":       self._spin_rbe_sz.value(),
+            "n_rooms":      self._slider_rooms.value(),
+            "layout":       self._current_layout,
+            "corr_frac":    self._slider_corr.value() / 100.0,
+            "height_var":   self._chk_height.isChecked(),
+            "checkpoints":  self._chk_checks.isChecked(),
+            "use_physics":  self._chk_physics.isChecked(),
+            "prev_labels":  self._chk_prev_labels.isChecked(),
+            "prev_hmap":    self._chk_prev_hmap.isChecked(),
+            "prev_ramps":   self._chk_prev_ramps.isChecked(),
+            "dark_mode":    self._theme_toggle.is_dark(),
         }
-        for k, v in self._sz.items():
-            d[f"sz_{k}"] = v.get()
-        for attr in ("_v_u_base", "_v_u_gain", "_v_t_air", "_v_strafe_f", "_v_rpt"):
+        for lbl, sb in self._sz.items():
+            d[f"sz_{lbl}"] = sb.value()
+        for attr in ("_spin_u_base", "_spin_u_gain", "_spin_t_air",
+                     "_spin_strafe_f", "_spin_rpt"):
             if hasattr(self, attr):
-                d[attr] = getattr(self, attr).get()
+                d[attr] = getattr(self, attr).value()
         save_app_cfg(d)
-
-    def _browse_game_exe(self):
-        p = filedialog.askopenfilename(
-            title="Select game executable",
-            filetypes=[("Executable", "*.exe *.sh *.app"), ("All", "*.*")])
-        if p:
-            self._game_exe.set(p)
-
-    def _on_launch_game(self):
-        exe  = self._game_exe.get().strip()
-        path = self._last_map_path or self._out_path.get()
-        if not exe:
-            self._log("Set the game executable path first.", "warn")
-            return
-        if not path or not os.path.isfile(path):
-            self._log("Save a map first (or generate + auto-save).", "warn")
-            return
-        try:
-            cmd = [exe, "--", f"--import={path}"]
-            subprocess.Popen(cmd)
-            self._log(f"Launched: {' '.join(cmd)}", "info")
-        except Exception as ex:
-            self._log(f"Launch failed: {ex}", "error")
-
-    def _log(self, msg, level="plain"):
-        self._logbox.config(state="normal")
-        pfx = {"info": "[OK] ", "warn": "[!!] ", "error": "[ERR] "}.get(level, "")
-        self._logbox.insert("end", pfx + msg + "\n", level)
-        self._logbox.see("end")
-        self._logbox.config(state="disabled")
-        self._status.config(text=msg)
-
-    def _clear_log(self):
-        self._logbox.config(state="normal")
-        self._logbox.delete("1.0", "end")
-        self._logbox.config(state="disabled")
 
     # ── Generation ────────────────────────────────────────────────────────
     def _collect_cfg(self) -> dict:
         self._update_tex_lists()
         return {
-            "n_rooms":      self._v_rooms.get(),
-            "min_w": self._sz["Min W"].get(), "max_w": self._sz["Max W"].get(),
-            "min_d": self._sz["Min D"].get(), "max_d": self._sz["Max D"].get(),
-            "min_h": self._sz["Min H"].get(), "max_h": self._sz["Max H"].get(),
-            "use_physics":  self._v_use_physics.get(),
-            "u_base":       float(self._v_u_base.get()),
-            "u_gain":       float(self._v_u_gain.get()),
-            "t_air":        self._v_t_air.get() / 100.0,
-            "strafe_f":     self._v_strafe_f.get() / 100.0,
-            "rooms_per_turn": self._v_rpt.get(),
-            "layout_style":   self._v_layout.get(),
-            "seed":         self._v_seed.get(),
+            "n_rooms":      self._slider_rooms.value(),
+            "min_w": self._sz["Min W"].value(), "max_w": self._sz["Max W"].value(),
+            "min_d": self._sz["Min D"].value(), "max_d": self._sz["Max D"].value(),
+            "min_h": self._sz["Min H"].value(), "max_h": self._sz["Max H"].value(),
+            "use_physics":  self._chk_physics.isChecked(),
+            "u_base":       float(self._spin_u_base.value()),
+            "u_gain":       float(self._spin_u_gain.value()),
+            "t_air":        self._spin_t_air.value() / 100.0,
+            "strafe_f":     self._spin_strafe_f.value() / 100.0,
+            "rooms_per_turn": self._spin_rpt.value(),
+            "layout_style":   self._current_layout,
+            "seed":         self._spin_seed.value(),
             "map_name":     "turnt_map",
-            "height_var":   self._v_height.get(),
-            "checkpoints":  self._v_checks.get(),
-            "corridor_width_frac": self._v_corr_frac.get(),
+            "height_var":   self._chk_height.isChecked(),
+            "checkpoints":  self._chk_checks.isChecked(),
+            "corridor_width_frac": self._slider_corr.value() / 100.0,
         }
 
     def _on_generate(self):
@@ -895,8 +1556,8 @@ class App(tk.Tk):
                 u_end = cfg["u_base"] + (cfg["n_rooms"] - 1) * cfg["u_gain"]
                 self._log(
                     f"Generating {cfg['n_rooms']} rooms | "
-                    f"u: {cfg['u_base']:.0f}\u2192{u_end:.0f} UPS | "
-                    f"layout: {cfg['layout_style']} | seed {cfg['seed']}\u2026", "info")
+                    f"u: {cfg['u_base']:.0f}→{u_end:.0f} UPS | "
+                    f"layout: {cfg['layout_style']} | seed {cfg['seed']}…", "info")
                 t0 = time.perf_counter()
                 ms, rooms, bridges, gen_warnings = generate_map(cfg)
                 dt = time.perf_counter() - t0
@@ -906,22 +1567,32 @@ class App(tk.Tk):
                 self._bridges = bridges
                 self._is_rbe_import = False
 
-                nb = len(rooms) * 6 + len(bridges) * 4
+                nb = ms.count("// brush")
                 kb = len(ms.encode()) / 1024
+                n_cp = max(0, (len(rooms) - 2)) // 10
+                # Estimate run time: sum(room_len / speed_in) for each room
+                t_run = sum(
+                    (r.w if r.travel_axis == 'x' else r.d) / max(1.0, r.speed_in)
+                    for r in rooms
+                )
+                t_str = (f"{int(t_run // 60)}m {t_run % 60:.0f}s"
+                         if t_run >= 60 else f"{t_run:.0f}s")
                 self._log(
-                    f"Done in {dt:.2f}s \u2014 {len(rooms)} rooms, "
-                    f"{len(bridges)} bridges, ~{nb} brushes, {kb:.1f} KB", "info")
+                    f"Done in {dt:.2f}s — {len(rooms)} rooms, "
+                    f"{len(bridges)} bridges, {nb} brushes, {kb:.1f} KB", "info")
+                self._log(
+                    f"  Checkpoints: {n_cp}  |  Est. run time: ~{t_str}", "plain")
                 for w in gen_warnings:
                     self._log(w, "warn")
-                self._lbl_stats.config(
-                    text=f"rooms={len(rooms)}  bridges={len(bridges)}"
-                         f"  brushes\u2248{nb}  {kb:.1f} KB")
 
-                self.after(0, self._redraw)
-                self.after(0, lambda: self._viewer3d.load(self._rooms, self._bridges))
+                stats = (f"rooms={len(rooms)}  bridges={len(bridges)}"
+                         f"  brushes={nb}  ~{t_str}  {kb:.1f} KB")
+                self._ui(lambda s=stats: self._lbl_stats.setText(s))
+                self._ui(self._redraw)
+                self._ui(lambda: self._viewer3d.load(self._rooms, self._bridges))
 
-                if self._v_autorand.get():
-                    self.after(200, self._randomize_seed)
+                if self._btn_auto.isChecked():
+                    self._ui(lambda: QTimer.singleShot(200, self._randomize_seed))
 
             except Exception as ex:
                 import traceback; traceback.print_exc()
@@ -931,13 +1602,13 @@ class App(tk.Tk):
 
     def _on_import_rbe(self):
         def run():
-            path = self._v_rbe_path.get().strip()
+            path = self._edit_rbe_path.text().strip()
             if not path:
                 self._log("No file selected.", "error")
                 return
-            sx = self._v_rbe_sx.get()
-            sy = self._v_rbe_sy.get()
-            sz = self._v_rbe_sz.get()
+            sx = self._spin_rbe_sx.value()
+            sy = self._spin_rbe_sy.value()
+            sz = self._spin_rbe_sz.value()
             try:
                 ms, fake_rooms, _ = dbt_import.run_import(
                     path, sx, sy, sz, log_fn=self._log)
@@ -945,33 +1616,36 @@ class App(tk.Tk):
                 self._rooms   = fake_rooms
                 self._bridges = []
                 self._is_rbe_import = True
-                self.after(0, self._redraw)
-                self.after(0, lambda r=fake_rooms:
-                           self._viewer3d.load(r, [], show_labels=False))
+                self._ui(self._redraw)
+                self._ui(lambda r=fake_rooms:
+                         self._viewer3d.load(r, [], show_labels=False))
             except Exception as ex:
                 import traceback; traceback.print_exc()
                 self._log(f"Error: {ex}", "error")
 
         threading.Thread(target=run, daemon=True).start()
 
+    # ── Save / open ───────────────────────────────────────────────────────
+    def _current_out_path(self) -> str:
+        """Build the full output path from folder + current map name field."""
+        folder = self._edit_out_folder.text().strip() or os.getcwd()
+        name_edit = (self._edit_map_name_rbe
+                     if self._is_rbe_import else self._edit_map_name_gen)
+        name = name_edit.text().strip()
+        if not name:
+            name = "imported" if self._is_rbe_import else "generated"
+        if not name.lower().endswith(".map"):
+            name += ".map"
+        return os.path.join(folder, name)
+
     def _on_save(self):
         if not self._map_str:
-            self._log("Nothing to save \u2014 generate or import first.", "warn")
+            self._log("Nothing to save — generate or import first.", "warn")
             return
         self._do_save(manual=True)
 
-    def _on_open_folder(self):
-        folder = os.path.dirname(os.path.abspath(self._out_path.get()))
-        try:
-            if os.name == 'nt':
-                os.startfile(folder)
-            else:
-                subprocess.run(['xdg-open', folder])
-        except Exception as ex:
-            self._log(f"Cannot open folder: {ex}", "error")
-
     def _do_save(self, manual=False):
-        path = self._out_path.get()
+        path = self._current_out_path()
         try:
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
@@ -981,15 +1655,218 @@ class App(tk.Tk):
         except Exception as e:
             self._log(f"Save error: {e}", "error")
 
-    # ── 2D Preview ────────────────────────────────────────────────────────
+    def _on_open_folder(self):
+        folder = self._edit_out_folder.text().strip() or os.getcwd()
+        os.makedirs(folder, exist_ok=True)
+        try:
+            if os.name == 'nt':
+                os.startfile(folder)
+            else:
+                subprocess.run(['xdg-open', folder])
+        except Exception as ex:
+            self._log(f"Cannot open folder: {ex}", "error")
+
+    def _on_launch_game(self):
+        exe  = self._edit_game_exe.text().strip()
+        path = self._last_map_path or self._current_out_path()
+        if not exe:
+            self._log("Set the game executable path first.", "warn")
+            return
+        if not path or not os.path.isfile(path):
+            self._log("Save a map first (or generate + auto-save).", "warn")
+            return
+        try:
+            self._write_texture_mapping(exe, path)
+            cmd = [exe, "--", f"--import={path}"]
+            subprocess.Popen(cmd)
+            self._log(f"Launched: {' '.join(cmd)}", "info")
+        except Exception as ex:
+            self._log(f"Launch failed: {ex}", "error")
+
+    def _write_texture_mapping(self, exe_path: str, map_path: str):
+        """Write <game_dir>/map_wip/<map_name>.json with the current texture
+        index mapping, mirroring what turnt_texture_mapper.bat generates."""
+        import json as _json
+        game_dir = os.path.dirname(os.path.abspath(exe_path))
+        map_name = os.path.splitext(os.path.basename(map_path))[0]
+        wip_dir  = os.path.join(game_dir, "map_wip")
+        os.makedirs(wip_dir, exist_ok=True)
+        out_path = os.path.join(wip_dir, f"{map_name}.json")
+        payload  = {"inverse_scale": 24, "textures": dict(ALL_TEXTURES)}
+        with open(out_path, "w", encoding="utf-8") as f:
+            _json.dump(payload, f, indent=2)
+        self._log(f"Texture map → {out_path}", "info")
+
+    # ── Browse helpers ────────────────────────────────────────────────────
+    def _browse_out_folder(self):
+        d = QFileDialog.getExistingDirectory(
+            self, "Select output folder",
+            self._edit_out_folder.text() or os.getcwd())
+        if d:
+            self._edit_out_folder.setText(d)
+
+    def _browse_tex_folder(self):
+        d = QFileDialog.getExistingDirectory(
+            self, "Select texture folder", self._edit_tex_folder.text())
+        if d:
+            self._edit_tex_folder.setText(d)
+            self._tex_paths.clear()
+            self._tex_pixmaps.clear()
+            self._status_bar.showMessage("Scanning texture folder…")
+            threading.Thread(target=self._scan_tex_folder, args=(d,), daemon=True).start()
+
+    def _scan_tex_folder(self, folder: str):
+        found = {}
+        for root_d, _, files in os.walk(folder):
+            for fn in files:
+                nm, ext = os.path.splitext(fn)
+                if ext.lower() not in IMG_EXTS:
+                    continue
+                for tex in ALL_TEXTURES:
+                    base = tex.split("/")[-1]
+                    if nm.lower() == base.lower():
+                        found[tex] = os.path.join(root_d, fn)
+        self._tex_paths.update(found)
+        self._ui(lambda n=len(found):
+            self._status_bar.showMessage(f"Scan complete — {n} textures matched"))
+        self._ui(self._refresh_thumbs)
+
+    def _refresh_thumbs(self):
+        if not PIL_OK:
+            return
+        # Reload thumbnails by re-populating the list
+        self._tex_pixmaps.clear()
+        self._populate_tex_list()
+
+    def _browse_game_exe(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select game executable", self._edit_game_exe.text(),
+            "Executable (*.exe *.sh *.app);;All files (*.*)")
+        if path:
+            self._edit_game_exe.setText(path)
+
+    def _browse_rbe(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Diabotical map", self._edit_rbe_path.text(),
+            "Diabotical Map (*.rbe);;All files (*.*)")
+        if path:
+            self._edit_rbe_path.setText(path)
+            # Auto-fill map name from source filename (user can still change it)
+            stem = os.path.splitext(os.path.basename(path))[0]
+            self._edit_map_name_rbe.setText(stem)
+
+    # ── Preview ───────────────────────────────────────────────────────────
     def _redraw(self):
-        draw_2d_preview(
-            self._canvas, self._rooms, self._bridges,
-            zoom=self._2d_zoom,
-            pan_x=self._2d_pan_x,
-            pan_y=self._2d_pan_y,
+        self._preview2d.load(
+            self._rooms, self._bridges,
             is_rbe_import=self._is_rbe_import,
-            use_physics=self._v_use_physics.get(),
-            show_labels=self._v_prev_labels.get(),
-            show_hmap=self._v_prev_hmap.get(),
+            use_physics=self._chk_physics.isChecked(),
+            show_labels=self._chk_prev_labels.isChecked(),
+            show_hmap=self._chk_prev_hmap.isChecked(),
         )
+
+    def _2d_fit(self):
+        self._preview2d.fit()
+
+    def _on_view_tab_changed(self, index: int):
+        if index == 1 and self._rooms:  # 3D tab
+            self._viewer3d.load(
+                self._rooms, self._bridges,
+                show_labels=(self._chk_prev_labels.isChecked() and not self._is_rbe_import))
+
+    # ── Theme ─────────────────────────────────────────────────────────────
+    def _apply_theme(self, dark: bool):
+        """Switch between dark and light themes at runtime."""
+        self._dark_mode = dark
+        T.clear()
+        T.update(DARK_T if dark else LIGHT_T)
+        QApplication.instance().setStyleSheet(build_qss(T))
+        # Refresh QPainter-based widgets so they repaint with new palette
+        if hasattr(self, '_preview2d'):
+            self._preview2d.update()
+        if hasattr(self, '_viewer3d'):
+            self._viewer3d.update()
+
+    # ── Thread-safe UI dispatch ───────────────────────────────────────────
+    def _ui(self, fn):
+        """Call fn() on the main thread, safe to invoke from any thread."""
+        if threading.current_thread() is threading.main_thread():
+            fn()
+        else:
+            self._dispatch_signal.emit(fn)
+
+    # ── Log ───────────────────────────────────────────────────────────────
+    def _log(self, msg: str, level: str = "plain"):
+        color_map = {
+            "info":  QColor(T["success"]),
+            "warn":  QColor(T["warning"]),
+            "error": QColor(T["accent"]),
+            "plain": QColor(T["text_dim"]),
+        }
+        pfx = {"info": "[OK] ", "warn": "[!!] ", "error": "[ERR] "}.get(level, "")
+        fmt = QTextCharFormat()
+        fmt.setForeground(color_map.get(level, QColor(T["text_dim"])))
+
+        def _append():
+            cursor = self._logbox.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.insertText(pfx + msg + "\n", fmt)
+            self._logbox.setTextCursor(cursor)
+            self._logbox.ensureCursorVisible()
+            self._status_bar.showMessage(msg)
+
+        self._ui(_append)
+
+    def _clear_log(self):
+        self._logbox.clear()
+
+    # ── UI helpers ────────────────────────────────────────────────────────
+    def _toggle_physics(self):
+        enabled = self._chk_physics.isChecked()
+        for sb in self._phy_widgets:
+            sb.setEnabled(enabled)
+
+    def _toggle_autorand(self):
+        is_auto = self._btn_auto.isChecked()
+        self._btn_auto.setProperty("active", "true" if is_auto else "false")
+        self._btn_auto.style().unpolish(self._btn_auto)
+        self._btn_auto.style().polish(self._btn_auto)
+        self._spin_seed.setReadOnly(is_auto)
+        self._spin_seed.setButtonSymbols(
+            QSpinBox.ButtonSymbols.NoButtons if is_auto
+            else QSpinBox.ButtonSymbols.UpDownArrows)
+        if is_auto:
+            self._randomize_seed(silent=True)
+
+    def _randomize_seed(self, silent: bool = False):
+        if not self._btn_auto.isChecked():
+            return
+        s = random.randint(0, 9_999_999)
+        self._spin_seed.setValue(s)
+        if not silent:
+            self._log(f"Seed → {s}", "info")
+
+    # ── Auto-update ───────────────────────────────────────────────────────
+    def _on_update_available(self, version: str, url: str):
+        self._ui(lambda v=version, u=url: self._show_update_banner(v, u))
+
+    def _show_update_banner(self, version: str, url: str):
+        banner = QWidget()
+        banner.setObjectName("updateBanner")
+        banner.setFixedHeight(36)
+        row = QHBoxLayout(banner)
+        row.setContentsMargins(12, 4, 12, 4)
+        lbl = QLabel(f"  Update v{version} available!")
+        btn_update = QPushButton("Update now")
+        btn_update.setObjectName("btnSmall")
+        btn_update.clicked.connect(
+            lambda: download_and_restart(url, version, self._status_bar.showMessage))
+        btn_dismiss = QPushButton("✕")
+        btn_dismiss.setObjectName("btnSmall")
+        btn_dismiss.setFixedWidth(28)
+        btn_dismiss.clicked.connect(banner.hide)
+        row.addWidget(lbl)
+        row.addStretch()
+        row.addWidget(btn_update)
+        row.addWidget(btn_dismiss)
+        self._root_layout.insertWidget(1, banner)
