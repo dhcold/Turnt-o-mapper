@@ -10,12 +10,21 @@ pipeline and accepts a ``log_fn`` callback for progress reporting.
 """
 
 import math
+import sys
 import time
 from typing import Dict, List, Optional
 
-from .constants import ALL_TEXTURES, NODRAW_TEX
-from .brushes import face, box_faces, write_brush
-from .models import Room
+# Allow running this file directly (e.g. for quick testing)
+try:
+    from .constants import ALL_TEXTURES, NODRAW_TEX
+    from .brushes import face, box_faces, write_brush
+    from .models import Room
+except ImportError:
+    import os as _os
+    sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    from turnt_o_mapper.constants import ALL_TEXTURES, NODRAW_TEX
+    from turnt_o_mapper.brushes import face, box_faces, write_brush
+    from turnt_o_mapper.models import Room
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -424,8 +433,10 @@ def rbe_entities_to_map(entities, sx, sy, sz, opaque_tex="turnt/turnt_concrete")
             if prop_shape is None:
                 continue
 
-            fx = max(MIN_HALF, abs(e.get("xscale", 1.0)) * sx)
-            fy = max(MIN_HALF, abs(e.get("zscale", 1.0)) * sy)
+            # xscale/zscale are half-extents in block units; *2 to get full extent
+            # yscale (height) already has *2 for the same reason
+            fx = max(MIN_HALF, abs(e.get("xscale", 1.0)) * sx * 2)
+            fy = max(MIN_HALF, abs(e.get("zscale", 1.0)) * sy * 2)
             fz = max(MIN_HALF, abs(e.get("yscale", 1.0)) * 2 * sz)
 
             if prop_shape == "box":
@@ -437,7 +448,7 @@ def rbe_entities_to_map(entities, sx, sy, sz, opaque_tex="turnt/turnt_concrete")
                 brushes.append(write_brush(fs, f"prop_box {nm}"))
 
             elif prop_shape == "diagonal":
-                ang = e.get("yrot", 0.0) % (2 * math.pi)
+                ang = math.radians(e.get("yrot", 0.0)) % (2 * math.pi)
                 if ang < math.pi / 4 or ang >= 7 * math.pi / 4:
                     x0, x1 = qx, qx + fx
                     y0, y1 = qy - fy, qy
@@ -480,7 +491,7 @@ def rbe_entities_to_map(entities, sx, sy, sz, opaque_tex="turnt/turnt_concrete")
                     f"diag_prop {nm}"))
 
             elif prop_shape == "corner":
-                ang = e.get("yrot", 0.0) % (2 * math.pi)
+                ang = math.radians(e.get("yrot", 0.0)) % (2 * math.pi)
                 hx, hy, hz = fx / 2, fy / 2, fz / 2
                 x0, x1 = qx - hx, qx + hx
                 y0, y1 = qy - hy, qy + hy
@@ -511,7 +522,8 @@ def rbe_entities_to_map(entities, sx, sy, sz, opaque_tex="turnt/turnt_concrete")
                     f"corner_prop {nm}"))
 
             elif prop_shape == "cylinder":
-                ang = e.get("yrot", 0.0)
+                # yrot is in degrees (same as diagonal/corner); convert to radians
+                ang = math.radians(e.get("yrot", 0.0))
                 outer_r = max(MIN_HALF, abs(e.get("xscale", 1.0)) * sx * 4)
                 wall_t  = sx / 2.0
                 inner_r = outer_r - wall_t
@@ -546,7 +558,9 @@ def rbe_to_map_string(merged_with_mat, mat_tex, sx, sy, sz,
         entity_lines: entity definition strings (outside worldspawn).
     """
     lines = [
-        "// Turnt-o-mapper \u2014 DBT Import",
+        "// Game: Quake 3",
+        "// Format: Quake 3 (Valve)",
+        "// Imported by Turnt-o-mapper",
         "{",
         '"classname" "worldspawn"',
     ]
@@ -591,6 +605,10 @@ def run_import(path, sx, sy, sz, log_fn=None):
         if log_fn:
             log_fn(msg, level)
 
+    # 0. Show parameters
+    _log(f"Scale: 1 block → X={sx}qu  Y={sy}qu  Z(height)={sz}qu  |  "
+         f"prop angles: degrees", "info")
+
     # 1. Parse
     _log(f"Parsing {path} \u2026", "info")
     t0 = time.perf_counter()
@@ -604,7 +622,7 @@ def run_import(path, sx, sy, sz, log_fn=None):
     CLIP_TEX = {
         2: "common/caulk",
         4: "common/weapclip",
-        5: "common/playerclip",
+        5: "common/clip",
     }
     solid_blocks  = [b for b in blocks if b["type"] == 1]
     corner_blocks = [b for b in blocks if b["type"] == 3]
@@ -672,8 +690,10 @@ def run_import(path, sx, sy, sz, log_fn=None):
                        if _TURNT_POOL else "turnt/turnt_concrete")
     prop_brushes, entity_lines = rbe_entities_to_map(
         entities, sx, sy, sz, opaque_tex=opaque_prop_tex)
-    n_spawns   = sum(1 for e in entities if e["name"] == "spawn")
-    n_triggers = sum(1 for e in entities if e["name"].startswith("trigger_"))
+    n_spawns    = sum(1 for e in entities if e["name"] == "spawn")
+    n_start_t   = sum(1 for e in entities if e["name"].startswith("trigger_start"))
+    n_end_t     = sum(1 for e in entities if e["name"].startswith("trigger_end"))
+    n_checkpoints = sum(1 for e in entities if e["name"].startswith("trigger_split"))
 
     def _model(ent):
         for p in ent.get("properties", []):
@@ -681,7 +701,9 @@ def run_import(path, sx, sy, sz, log_fn=None):
                 return p["val"].lower()
         return ""
     n_props = sum(1 for e in entities if "invisible" in _model(e))
-    _log(f"Entities: {n_spawns} spawn, {n_triggers} triggers, {n_props} props")
+    spawn_ok = "✓" if n_spawns else "✗ NOT FOUND"
+    _log(f"Entities: spawn {spawn_ok}  |  "
+         f"start: {n_start_t}, end: {n_end_t}, checkpoints: {n_checkpoints}, props: {n_props}")
 
     # 6. Generate .map string
     _log("Generating .map \u2026")
@@ -711,6 +733,12 @@ def run_import(path, sx, sy, sz, log_fn=None):
         in enumerate(merged_with_mat)
     ]
 
-    _log("Done! Preview updated. Use 'Save .map' to write the file.", "info")
+    _log(
+        f"Import complete — {len(blocks):,} DBT blocks → {total_brushes:,} Q3 brushes "
+        f"| spawn {'✓' if n_spawns else '✗'} "
+        f"| triggers: start={n_start_t} end={n_end_t} checkpoints={n_checkpoints} "
+        f"| {kb:.1f} KB",
+        "info"
+    )
 
     return ms, fake_rooms, []

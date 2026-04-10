@@ -1,7 +1,7 @@
 """
 Lightweight isometric / perspective wireframe 3D viewer.
 
-``Viewer3D`` is a Tkinter Canvas subclass that renders rooms and bridges
+``Viewer3DWidget`` is a QWidget subclass that renders rooms and bridges
 as depth-sorted wireframe boxes.  Supports mouse-drag rotation, scroll
 zoom, and WASD keyboard panning.  Preset views (Iso, Top, Front, Side)
 are available via ``set_preset()``.
@@ -10,18 +10,22 @@ are available via ``set_preset()``.
 import math
 from typing import List, Tuple
 
-import tkinter as tk
+from PyQt6.QtWidgets import QWidget
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
+from PyQt6.QtGui import (
+    QPainter, QColor, QPen, QBrush, QFont, QPolygonF
+)
 
 from .constants import T, DOOR_H
 from .models import Room, Bridge
 
 
-class Viewer3D(tk.Canvas):
+class Viewer3DWidget(QWidget):
     """Interactive isometric wireframe viewer for Room + Bridge lists.
 
     Usage::
 
-        v = Viewer3D(parent_frame)
+        v = Viewer3DWidget(parent)
         v.load(rooms, bridges)
         v.set_preset("Iso")  # snap to isometric view
     """
@@ -33,10 +37,12 @@ class Viewer3D(tk.Canvas):
         "Side":  ( 0.0,   90.0),
     }
 
-    def __init__(self, parent, **kw):
-        super().__init__(parent, bg=T["prev_bg"],
-                         highlightthickness=1,
-                         highlightbackground=T["border"], **kw)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(100, 100)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+
         self._rooms:   List[Room]   = []
         self._bridges: List[Bridge] = []
         self._elev  =  30.0
@@ -46,78 +52,59 @@ class Viewer3D(tk.Canvas):
         self._pan_x  =  0.0
         self._pan_y  =  0.0
         self._keys: set = set()
-        self._wasd_job  = None
+        self._show_labels: bool = True
+        self._cx3d = self._cy3d = self._cz3d = 0.0
 
-        self.bind("<Configure>",      lambda e: self._draw())
-        self.bind("<ButtonPress-1>",  self._on_press)
-        self.bind("<B1-Motion>",      self._on_drag)
-        self.bind("<MouseWheel>",     self._on_scroll)
-        self.bind("<Button-4>",       self._on_scroll)
-        self.bind("<Button-5>",       self._on_scroll)
-        self.bind("<ButtonPress-1>",  lambda e: (self.focus_set(), self._on_press(e)))
-        self.bind("<KeyPress>",       self._on_key_press)
-        self.bind("<KeyRelease>",     self._on_key_release)
-
-        self._wasd_start()
-
-    # ── WASD camera ───────────────────────────────────────────────────────
-    def _on_key_press(self, e):
-        self._keys.add(e.keysym.lower())
-
-    def _on_key_release(self, e):
-        self._keys.discard(e.keysym.lower())
-
-    def _wasd_start(self):
-        self._wasd_job = self.after(16, self._wasd_tick)
-
-    def _wasd_tick(self):
-        spd = max(4.0, 400.0 / max(self._zoom * 100, 1))
-        changed = False
-        if 'w' in self._keys:  self._pan_y += spd; changed = True
-        if 's' in self._keys:  self._pan_y -= spd; changed = True
-        if 'a' in self._keys:  self._pan_x -= spd; changed = True
-        if 'd' in self._keys:  self._pan_x += spd; changed = True
-        if changed:
-            self._draw()
-        self._wasd_job = self.after(16, self._wasd_tick)
+        # WASD pan at ~60 fps
+        self._wasd_timer = QTimer(self)
+        self._wasd_timer.setInterval(16)
+        self._wasd_timer.timeout.connect(self._wasd_tick)
+        self._wasd_timer.start()
 
     # ── public API ────────────────────────────────────────────────────────
     def load(self, rooms: List[Room], bridges: List[Bridge],
              show_labels: bool = True):
         """Load a new set of rooms and bridges and redraw."""
-        self._rooms   = rooms
-        self._bridges = bridges
-        self._show_labels = show_labels
-        self._pan_x   = 0.0
-        self._pan_y   = 0.0
+        self._rooms        = rooms
+        self._bridges      = bridges
+        self._show_labels  = show_labels
+        self._pan_x        = 0.0
+        self._pan_y        = 0.0
         self._fit()
-        self._draw()
+        self.update()
 
     def set_preset(self, name: str):
         """Snap the camera to a named preset view angle."""
-        elev, azim = self.PRESETS.get(name, (30.0, 45.0))
-        self._elev = elev
-        self._azim = azim
-        self._draw()
+        self._elev, self._azim = self.PRESETS.get(name, (30.0, 45.0))
+        self.update()
 
-    # ── internal ──────────────────────────────────────────────────────────
+    # ── WASD ──────────────────────────────────────────────────────────────
+    def _wasd_tick(self):
+        spd = max(4.0, 400.0 / max(self._zoom * 100, 1))
+        changed = False
+        if Qt.Key.Key_W in self._keys: self._pan_y += spd; changed = True
+        if Qt.Key.Key_S in self._keys: self._pan_y -= spd; changed = True
+        if Qt.Key.Key_A in self._keys: self._pan_x -= spd; changed = True
+        if Qt.Key.Key_D in self._keys: self._pan_x += spd; changed = True
+        if changed:
+            self.update()
+
+    # ── geometry ──────────────────────────────────────────────────────────
     def _fit(self):
-        """Reset zoom so the whole map fits the canvas."""
         if not self._rooms:
             return
         xs = [r.x1 for r in self._rooms] + [r.x2 for r in self._rooms]
         ys = [r.y1 for r in self._rooms] + [r.y2 for r in self._rooms]
         zs = [r.z1 for r in self._rooms] + [r.z2 for r in self._rooms]
         span = max(max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs), 1)
-        W = self.winfo_width()  or 400
-        H = self.winfo_height() or 400
+        W = self.width()  or 400
+        H = self.height() or 400
         self._zoom = min(W, H) * 0.55 / span
         self._cx3d = (min(xs) + max(xs)) / 2
         self._cy3d = (min(ys) + max(ys)) / 2
         self._cz3d = (min(zs) + max(zs)) / 2
 
     def _project(self, x, y, z) -> Tuple[float, float]:
-        """Project a 3D point to 2D screen coordinates via rotation matrix."""
         x -= self._cx3d
         y -= self._cy3d
         z -= self._cz3d
@@ -127,20 +114,17 @@ class Viewer3D(tk.Canvas):
 
         xr =  x * math.cos(az) + y * math.sin(az)
         yr = -x * math.sin(az) + y * math.cos(az)
-        zr =  z
 
         xf =  xr
-        yf =  yr * math.cos(el) - zr * math.sin(el)
-        zf =  yr * math.sin(el) + zr * math.cos(el)
+        zf =  yr * math.sin(el) + z * math.cos(el)
 
-        W = self.winfo_width()  or 400
-        H = self.winfo_height() or 400
+        W = self.width()  or 400
+        H = self.height() or 400
         sx = W / 2 + xf * self._zoom + self._pan_x
         sy = H / 2 - zf * self._zoom + self._pan_y
         return sx, sy
 
     def _box_edges(self, x1, y1, z1, x2, y2, z2):
-        """Return screen-coord edge pairs for an axis-aligned box."""
         corners = [
             (x1, y1, z1), (x2, y1, z1), (x2, y2, z1), (x1, y2, z1),
             (x1, y1, z2), (x2, y1, z2), (x2, y2, z2), (x1, y2, z2),
@@ -153,20 +137,23 @@ class Viewer3D(tk.Canvas):
         ]
         return [(proj[a], proj[b]) for a, b in edges]
 
-    def _draw(self):
-        """Render the full scene: bridges, rooms (depth-sorted), labels."""
-        self.delete("all")
-        W = self.winfo_width()
-        H = self.winfo_height()
-        if W < 10 or H < 10 or not self._rooms:
-            if not self._rooms:
-                self.create_text(W // 2 if W > 10 else 200,
-                                 H // 2 if H > 10 else 150,
-                                 text="Generate a map to see 3D view",
-                                 fill=T["text_dim"],
-                                 font=("Segoe UI", 11))
+    # ── painting ──────────────────────────────────────────────────────────
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        W, H = self.width(), self.height()
+        painter.fillRect(0, 0, W, H, QColor(T["prev_bg"]))
+
+        if not self._rooms:
+            painter.setPen(QColor(T["text_dim"]))
+            painter.setFont(QFont("Segoe UI", 11))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                             "Generate a map to see 3D view")
             return
 
+        self._draw_scene(painter, W, H)
+
+    def _draw_scene(self, painter: QPainter, W: int, H: int):
         n = len(self._rooms)
 
         def depth(r):
@@ -175,6 +162,7 @@ class Viewer3D(tk.Canvas):
         sorted_rooms = sorted(self._rooms, key=depth, reverse=True)
 
         # Bridges first (behind rooms)
+        pen_corr = QPen(QColor(T["corr_col"]), 1)
         for br in self._bridges:
             hw = br.door_hw
             if br.axis == 'x':
@@ -183,75 +171,97 @@ class Viewer3D(tk.Canvas):
             else:
                 bx1, by1, bz1 = br.ax - hw, min(br.ay, br.by), min(br.az, br.bz)
                 bx2, by2, bz2 = br.ax + hw, max(br.ay, br.by), min(br.az, br.bz) + DOOR_H
-            for pa, pb in self._box_edges(bx1, by1, bz1, bx2, by2, bz2):
-                self.create_line(pa[0], pa[1], pb[0], pb[1],
-                                 fill=T["corr_col"], width=1)
+            painter.setPen(pen_corr)
+            for (ax, ay), (bx, by) in self._box_edges(bx1, by1, bz1, bx2, by2, bz2):
+                painter.drawLine(QPointF(ax, ay), QPointF(bx, by))
 
-        # Rooms
+        # Rooms (depth sorted)
         for room in sorted_rooms:
             idx = room.idx
             if idx == 0:
-                col, edge_col = T["start_col"], T["success"]
+                col_str, edge_str = T["start_col"], T["success"]
             elif idx == n - 1:
-                col, edge_col = T["end_col"], T["accent"]
+                col_str, edge_str = T["end_col"], T["accent"]
             else:
                 t_speed = (room.speed_in - 550) / max(1, (550 + 60 * n) - 550)
                 t_speed = max(0.0, min(1.0, t_speed))
                 r_c = int(0x1e + t_speed * (0x2a - 0x1e))
                 g_c = int(0x39 + t_speed * (0x5a - 0x39))
                 b_c = int(0x60 + t_speed * (0x9e - 0x60))
-                col = f"#{r_c:02x}{g_c:02x}{b_c:02x}"
-                edge_col = T["room_bdr"]
+                col_str  = f"#{r_c:02x}{g_c:02x}{b_c:02x}"
+                edge_str = T["room_bdr"]
 
-            edges = self._box_edges(room.x1, room.y1, room.z1,
-                                    room.x2, room.y2, room.z2)
+            col  = QColor(col_str)
+            edge = QColor(edge_str)
+
+            # Top face polygon (semi-transparent fill)
+            top_col = QColor(col)
+            top_col.setAlpha(120)
             top_pts = [
                 self._project(room.x1, room.y1, room.z2),
                 self._project(room.x2, room.y1, room.z2),
                 self._project(room.x2, room.y2, room.z2),
                 self._project(room.x1, room.y2, room.z2),
             ]
-            flat_top = [c for pt in top_pts for c in pt]
-            self.create_polygon(flat_top, fill=col,
-                                outline=edge_col, width=1,
-                                stipple="gray25")
-            for pa, pb in edges:
-                self.create_line(pa[0], pa[1], pb[0], pb[1],
-                                 fill=edge_col, width=1)
+            poly = QPolygonF([QPointF(px, py) for px, py in top_pts])
+            painter.setBrush(QBrush(top_col))
+            painter.setPen(QPen(edge, 1))
+            painter.drawPolygon(poly)
 
-            if getattr(self, '_show_labels', True):
+            # Box edges
+            painter.setPen(QPen(edge, 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            for (ax, ay), (bx, by) in self._box_edges(
+                    room.x1, room.y1, room.z1, room.x2, room.y2, room.z2):
+                painter.drawLine(QPointF(ax, ay), QPointF(bx, by))
+
+            # Label
+            if self._show_labels:
                 p_lo = self._project(room.x1, room.y1, room.z2)
                 p_hi = self._project(room.x2, room.y2, room.z2)
                 proj_size = max(abs(p_hi[0] - p_lo[0]), abs(p_hi[1] - p_lo[1]))
                 label_gap = max(1, int(25 / max(proj_size, 1)))
                 if proj_size > 18 and idx % label_gap == 0:
-                    sx, sy = (p_lo[0] + p_hi[0]) / 2, (p_lo[1] + p_hi[1]) / 2
-                    self.create_text(sx, sy - 8, text=str(idx + 1),
-                                     fill=T["text"], font=("Segoe UI", 7, "bold"))
+                    sx = (p_lo[0] + p_hi[0]) / 2
+                    sy = (p_lo[1] + p_hi[1]) / 2 - 8
+                    painter.setPen(QColor(T["text"]))
+                    painter.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+                    painter.drawText(QPointF(sx, sy), str(idx + 1))
 
-        self.create_text(8, 8,
-            text=(f"elev={self._elev:.0f}\u00b0  azim={self._azim:.0f}\u00b0  zoom={self._zoom*100:.0f}%"
-                  f"   WASD=pan  drag=rotate  scroll=zoom"),
-            fill=T["text_dim"], font=("Consolas", 7), anchor="nw")
+        # HUD
+        hud = (f"elev={self._elev:.0f}°  azim={self._azim:.0f}°"
+               f"  zoom={self._zoom*100:.0f}%"
+               "   WASD=pan  drag=rotate  scroll=zoom")
+        painter.setPen(QColor(T["text_dim"]))
+        painter.setFont(QFont("Consolas", 7))
+        painter.drawText(QPointF(8, 14), hud)
 
-    # ── mouse interaction ─────────────────────────────────────────────────
-    def _on_press(self, e):
-        self._drag_x = e.x
-        self._drag_y = e.y
+    # ── mouse / keyboard ──────────────────────────────────────────────────
+    def mousePressEvent(self, event):
+        self._drag_x = event.position().x()
+        self._drag_y = event.position().y()
+        self.setFocus()
 
-    def _on_drag(self, e):
-        dx = e.x - self._drag_x
-        dy = e.y - self._drag_y
-        self._azim  = (self._azim  + dx * 0.5) % 360
-        self._elev  = max(-89.9, min(89.9, self._elev - dy * 0.4))
-        self._drag_x = e.x
-        self._drag_y = e.y
-        self._draw()
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            dx = event.position().x() - self._drag_x
+            dy = event.position().y() - self._drag_y
+            self._azim = (self._azim + dx * 0.5) % 360
+            self._elev = max(-89.9, min(89.9, self._elev - dy * 0.4))
+            self._drag_x = event.position().x()
+            self._drag_y = event.position().y()
+            self.update()
 
-    def _on_scroll(self, e):
-        if e.num == 4 or e.delta > 0:
+    def wheelEvent(self, event):
+        if event.angleDelta().y() > 0:
             self._zoom *= 1.1
         else:
             self._zoom /= 1.1
         self._zoom = max(0.001, min(self._zoom, 50.0))
-        self._draw()
+        self.update()
+
+    def keyPressEvent(self, event):
+        self._keys.add(event.key())
+
+    def keyReleaseEvent(self, event):
+        self._keys.discard(event.key())
