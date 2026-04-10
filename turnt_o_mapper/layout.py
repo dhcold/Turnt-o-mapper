@@ -1,0 +1,479 @@
+"""
+Physics-driven room placement and bridge building.
+
+This module contains the layout engine that arranges rooms in 2D/3D space
+using one of six layout styles (Linear, Zigzag, Snake, Random, Spiral,
+Multilevel).  Room dimensions can be derived from a player-speed model
+or drawn uniformly from min/max slider values.
+
+It also provides geometric utility functions used by both the layout
+engine and the brush generation module (clip intervals, footprint
+subtraction, etc.).
+"""
+
+import random
+from typing import List, Optional, Tuple, Dict
+
+from .constants import (
+    FLOOR_TEX, WALL_TEX, CEIL_TEX,
+    DOOR_H, WALL_T,
+)
+from .models import Room, Bridge
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  GEOMETRY UTILITIES (used by brushes.py and entities.py as well)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _snap(v, grid=64):
+    """Round *v* to the nearest multiple of *grid* (default 64 Quake units)."""
+    return round(v / grid) * grid
+
+
+def _clamp(v, lo, hi):
+    """Constrain *v* to the inclusive range [lo, hi]."""
+    return max(lo, min(hi, v))
+
+
+def _xy_overlap(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2) -> bool:
+    """Return True if axis-aligned rectangles (a) and (b) overlap in XY."""
+    return ax1 < bx2 and ax2 > bx1 and ay1 < by2 and ay2 > by1
+
+
+def _clip_intervals(lo: int, hi: int, clips) -> list:
+    """Subtract a list of (clo, chi) intervals from the segment [lo, hi].
+
+    Returns the list of remaining non-overlapping segments as (start, end) tuples.
+    Each element of *clips* is a (clo, chi) pair that removes the intersection
+    from the running segment list.
+
+    Example::
+
+        _clip_intervals(0, 100, [(20, 40), (60, 80)])
+        # -> [(0, 20), (40, 60), (80, 100)]
+    """
+    segs = [(lo, hi)]
+    for clo, chi in clips:
+        new_segs = []
+        for a, b in segs:
+            ov_lo = max(a, clo)
+            ov_hi = min(b, chi)
+            if ov_lo >= ov_hi:
+                new_segs.append((a, b))
+            else:
+                if a < ov_lo:
+                    new_segs.append((a, ov_lo))
+                if ov_hi < b:
+                    new_segs.append((ov_hi, b))
+        segs = new_segs
+    return segs
+
+
+def _subtract_rect(rx1, ry1, rx2, ry2, ox1, oy1, ox2, oy2):
+    """Subtract an obstacle rectangle from *rect*, returning up to 4 pieces.
+
+    Both rectangles are axis-aligned.  Returns the list of (x1,y1,x2,y2)
+    sub-rectangles that remain after removing the intersection with the
+    obstacle.  If there is no intersection the original rect is returned
+    unchanged.
+    """
+    cx1 = max(rx1, ox1); cy1 = max(ry1, oy1)
+    cx2 = min(rx2, ox2); cy2 = min(ry2, oy2)
+    if cx1 >= cx2 or cy1 >= cy2:
+        return [(rx1, ry1, rx2, ry2)]
+    return [(x1, y1, x2, y2) for x1, y1, x2, y2 in [
+        (rx1, ry1, cx1, ry2),   # left of obstacle
+        (cx2, ry1, rx2, ry2),   # right of obstacle
+        (cx1, ry1, cx2, cy1),   # below obstacle (centre strip)
+        (cx1, cy2, cx2, ry2),   # above obstacle (centre strip)
+    ] if x1 < x2 and y1 < y2]
+
+
+def _clip_footprint(x1, y1, x2, y2, clips):
+    """Return the list of rectangles remaining after subtracting all *clips*.
+
+    Each clip is an (x1, y1, x2, y2) rectangle.  The result is a list of
+    non-overlapping sub-rectangles covering the original footprint minus
+    the union of all clip regions.  Used for floor / ceiling generation to
+    avoid placing geometry inside overlapping rooms.
+    """
+    rects = [(x1, y1, x2, y2)]
+    for cx1, cy1, cx2, cy2 in clips:
+        new_rects = []
+        for r in rects:
+            new_rects.extend(_subtract_rect(*r, cx1, cy1, cx2, cy2))
+        rects = new_rects
+    return rects
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ROOM DIMENSIONING
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _room_dims_from_physics(i: int, cfg: dict) -> Tuple[int, int, int, int, float]:
+    """Compute room dimensions for room index *i* based on config.
+
+    When ``cfg['use_physics']`` is True, sizes are derived from the speed
+    model (base speed + per-room gain, air time, strafe factor).  Otherwise
+    dimensions are drawn uniformly from the min/max slider values.
+
+    Returns:
+        (room_len, room_cross, room_h, door_hw, u_i)
+        where *room_len* is the long side (travel axis), *room_cross* is the
+        lateral dimension, *room_h* is the ceiling height, *door_hw* is the
+        half-width of the exit door, and *u_i* is the estimated player speed.
+    """
+    u_base = cfg.get("u_base", 550.0)
+    u_gain = cfg.get("u_gain", 60.0)
+    u_i    = u_base + i * u_gain
+
+    min_w = cfg.get("min_w", 256);  max_w = cfg.get("max_w", 1536)
+    min_d = cfg.get("min_d", 192);  max_d = cfg.get("max_d", 512)
+    min_h = cfg.get("min_h", 192);  max_h = cfg.get("max_h", 512)
+
+    corr_frac = cfg.get("corridor_width_frac", 0.67)
+
+    if cfg.get("use_physics", False):
+        t_air    = cfg.get("t_air",    0.68)
+        strafe_f = cfg.get("strafe_f", 0.15)
+        size_var = random.uniform(0.6, 1.5)
+        h_var    = random.uniform(0.8, 1.6)
+
+        room_len   = _snap(_clamp(u_i * t_air * 1.15 * size_var, min_w, max_w))
+        room_cross = _snap(_clamp(u_i * strafe_f * size_var,      min_d, max_d))
+        jump_z     = (u_i * 0.42) ** 2 / (2 * 800)
+        room_h     = _snap(_clamp((jump_z + 128) * h_var,         min_h, max_h))
+    else:
+        room_len   = _snap(random.uniform(min_w, max(min_w, max_w)))
+        room_cross = _snap(random.uniform(min_d, max(min_d, max_d)))
+        room_h     = _snap(random.uniform(min_h, max(min_h, max_h)))
+
+    door_hw = _snap(_clamp(int(room_cross * corr_frac / 2), 32, room_cross // 2))
+    return room_len, room_cross, room_h, door_hw, u_i
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ROOM PLACEMENT
+# ══════════════════════════════════════════════════════════════════════════════
+
+def place_rooms(n: int, cfg: dict) -> List[Room]:
+    """Place *n* rooms using a physics-driven layout algorithm.
+
+    Supports six layout styles selectable via ``cfg['layout_style']``:
+
+    - **Linear** -- one straight line along the X axis.
+    - **Zigzag** -- alternating X / Y every *rooms_per_turn* rooms.
+    - **Snake** -- like Zigzag but segment length is randomised.
+    - **Random** -- 4-directional, turning 90 deg left or right randomly.
+    - **Spiral** -- always turns right (+X -> -Y -> -X -> +Y -> ...).
+    - **Multilevel** -- Random with large Z jumps; route folds back.
+
+    Rooms are separated by a minimum gap of 64 units to guarantee ramp
+    corridor space and eliminate Z-fighting between adjacent outer shells.
+    Zone-based texturing groups rooms in batches of 4 so each zone shares
+    a cohesive texture palette.
+
+    Returns the ordered list of :class:`Room` objects.
+    """
+    rooms: List[Room] = []
+    cx, cy, cz = 0, 0, 0
+
+    ZONE_SIZE = 4
+    _zone_cache: Dict[int, tuple] = {}
+
+    def _zone_tex(zone: int):
+        if zone not in _zone_cache:
+            _zone_cache[zone] = (
+                random.choice(FLOOR_TEX),
+                random.choice(WALL_TEX),
+                random.choice(CEIL_TEX),
+            )
+        return _zone_cache[zone]
+
+    layout = cfg.get("layout_style", "Zigzag")
+    rpt    = max(1, cfg.get("rooms_per_turn", 3))
+    t_air  = cfg.get("t_air", 0.68)
+
+    DIRS = [(1, 0), (0, -1), (-1, 0), (0, 1)]
+    dir_idx = 0
+    dx, dy  = DIRS[dir_idx]
+
+    axis = 'x'
+    rooms_in_seg    = 0
+    seg_turn_at     = rpt
+    prev_was_corner = False
+
+    for i in range(n):
+        # Detect corner: turn will happen after this room
+        if layout == "Linear":
+            is_corner_room = False
+        elif layout == "Snake":
+            is_corner_room = (rooms_in_seg + 1 >= seg_turn_at)
+        else:
+            is_corner_room = (rooms_in_seg + 1 >= rpt)
+
+        room_len, room_cross, room_h, door_hw, u_i = _room_dims_from_physics(i, cfg)
+
+        # Widen corner rooms for crouchslide turns
+        if is_corner_room and i > 0:
+            corner_scale = random.uniform(1.3, 1.6)
+            max_w = cfg.get("max_w", 1536)
+            max_d = cfg.get("max_d", 512)
+            room_len   = _snap(min(int(room_len   * corner_scale), max_w))
+            room_cross = _snap(min(int(room_cross * corner_scale), max_d))
+            corr_frac  = cfg.get("corridor_width_frac", 0.67)
+            door_hw    = _snap(_clamp(int(room_cross * corr_frac / 2), 32, room_cross // 2))
+
+        if layout in ("Random", "Spiral", "Multilevel"):
+            if dx != 0:
+                w, d   = room_len, room_cross
+                t_axis = 'x'
+            else:
+                w, d   = room_cross, room_len
+                t_axis = 'y'
+        else:
+            t_axis = axis
+            if axis == 'x':
+                w, d = room_len, room_cross
+            else:
+                w, d = room_cross, room_len
+
+        # Z variation (only on the room immediately after a corner)
+        if i > 0 and cfg.get("height_var", True):
+            prev_h = rooms[i - 1].h
+            if not prev_was_corner:
+                dz = 0
+            else:
+                if layout == "Multilevel":
+                    max_step = max(128, int(prev_h * 0.75))
+                    max_step = _snap(max_step, 64)
+                    dz_choices = [max_step // 2, max_step, -max_step // 2, -max_step,
+                                  max_step // 4, -max_step // 4]
+                else:
+                    max_step = max(64, int(prev_h * 0.5))
+                    max_step = _snap(max_step, 32)
+                    half     = max_step // 2
+                    dz_choices = [half, max_step, -half, -max_step]
+                dz = random.choice(dz_choices)
+                if i == 1:
+                    dz = min(dz, 0)
+            cz += dz
+            cz  = _snap(cz, 32)
+            prev_ceil = rooms[i - 1].z1 + rooms[i - 1].h
+            cz = min(cz, prev_ceil - DOOR_H)
+            if layout != "Multilevel":
+                cz = max(cz, 0)
+            else:
+                cz = max(cz, -2048)
+
+        # Z collision avoidance for folding layouts
+        if layout in ("Random", "Spiral", "Multilevel") and i > 0:
+            CLEARANCE = 64
+            prev_room = rooms[i - 1]
+            real_conflicts = [
+                r for r in rooms
+                if r is not prev_room
+                and _xy_overlap(cx, cy, cx + w, cy + d, r.x1, r.y1, r.x2, r.y2)
+                and r.z1 < cz + room_h + CLEARANCE
+                and cz < r.z1 + r.h + CLEARANCE
+            ]
+            if real_conflicts:
+                ov_z_ceil  = max(r.z1 + r.h for r in real_conflicts)
+                ov_z_floor = min(r.z1       for r in real_conflicts)
+                z_above = _snap(ov_z_ceil  + CLEARANCE, 32)
+                z_below = _snap(ov_z_floor - room_h - CLEARANCE, 32)
+                if abs(z_above - prev_room.z1) <= abs(z_below - prev_room.z1):
+                    cz = z_above
+                else:
+                    cz = z_below
+                if layout != "Multilevel":
+                    cz = max(cz, 0)
+                else:
+                    cz = max(cz, -2048)
+
+        _ft, _wt, _ct = _zone_tex(i // ZONE_SIZE)
+        r = Room(x=cx, y=cy, z=cz,
+                 w=w, d=d, h=room_h,
+                 idx=i,
+                 floor_t=_ft, wall_t=_wt, ceil_t=_ct,
+                 travel_axis=t_axis,
+                 speed_in=u_i,
+                 door_hw=door_hw)
+        rooms.append(r)
+
+        reach = u_i * t_air
+        gap   = max(64, _snap(random.uniform(0.0, reach * 0.25)))
+
+        # Advance cursor
+        if layout in ("Random", "Spiral", "Multilevel"):
+            cx += dx * (w + gap)
+            cy += dy * (d + gap)
+        else:
+            if axis == 'x':
+                cx += w + gap
+            else:
+                cy += d + gap
+
+        prev_was_corner = is_corner_room
+
+        # Turn logic
+        rooms_in_seg += 1
+        do_turn = False
+
+        if layout == "Linear":
+            do_turn = False
+        elif layout == "Zigzag":
+            do_turn = (rooms_in_seg >= rpt)
+        elif layout == "Snake":
+            do_turn = (rooms_in_seg >= seg_turn_at)
+        elif layout in ("Random", "Multilevel"):
+            do_turn = (rooms_in_seg >= rpt)
+        elif layout == "Spiral":
+            do_turn = (rooms_in_seg >= rpt)
+
+        if do_turn:
+            rooms_in_seg = 0
+
+            if layout in ("Random", "Multilevel"):
+                turn = random.choice([-1, 1])
+                dir_idx = (dir_idx + turn) % 4
+                dx, dy  = DIRS[dir_idx]
+            elif layout == "Spiral":
+                dir_idx = (dir_idx + 1) % 4
+                dx, dy  = DIRS[dir_idx]
+            else:
+                prev_axis = axis
+                axis = 'y' if axis == 'x' else 'x'
+                if layout == "Snake":
+                    seg_turn_at = random.randint(max(1, rpt - 1), rpt + 2)
+                next_len, next_cross = (
+                    _room_dims_from_physics(i + 1, cfg)[:2]
+                    if i + 1 < n else (room_len, room_cross)
+                )
+                if prev_axis == 'x':
+                    cy = r.cy() - next_cross // 2
+                else:
+                    cx = r.cx() - next_cross // 2
+
+    return rooms
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  BRIDGE BUILDING
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _pick_overlap_center(a1: int, a2: int, b1: int, b2: int,
+                         door_hw: int) -> Optional[Tuple[int, int]]:
+    """Find the centre of the overlapping span between two ranges.
+
+    Returns ``(center, effective_hw)`` if the overlap is wide enough for a
+    door opening (at least 32 units on each side), or ``None`` otherwise.
+    The centre is snapped to the grid.
+    """
+    lo = max(a1, b1)
+    hi = min(a2, b2)
+    span = hi - lo
+    if span <= 0:
+        return None
+    effective_hw = min(door_hw, span // 2)
+    if effective_hw < 32:
+        return None
+    center = (lo + hi) // 2
+    center = _snap(center)
+    center = max(lo + effective_hw, min(hi - effective_hw, center))
+    return center, effective_hw
+
+
+def _try_bridge(i: int, j: int, rooms: List[Room]) -> Optional[Bridge]:
+    """Attempt to create a bridge between rooms[i] and rooms[j].
+
+    Tests all four possible wall adjacencies (b right/left/above/below a).
+    When rooms overlap in XY no bridge is needed (shared open space).
+    Returns a :class:`Bridge` or ``None``.
+    """
+    a, b = rooms[i], rooms[j]
+
+    def _dhw(gap, cross_a, cross_b):
+        if gap == 0:
+            return min(cross_a, cross_b) // 2
+        return min(a.door_hw, b.door_hw)
+
+    if b.x1 >= a.x2:
+        gap = b.x1 - a.x2
+        dhw = _dhw(gap, a.d, b.d)
+        result = _pick_overlap_center(a.y1, a.y2, b.y1, b.y2, dhw)
+        if result is not None:
+            yc, dhw = result
+            return Bridge(i, j, 'x', a.x2, yc, a.z1, b.x1, yc, b.z1,
+                          door_hw=dhw,
+                          floor_t=a.floor_t, wall_t=a.wall_t, ceil_t=a.ceil_t)
+    elif a.x1 >= b.x2:
+        gap = a.x1 - b.x2
+        dhw = _dhw(gap, a.d, b.d)
+        result = _pick_overlap_center(a.y1, a.y2, b.y1, b.y2, dhw)
+        if result is not None:
+            yc, dhw = result
+            return Bridge(i, j, 'x', a.x1, yc, a.z1, b.x2, yc, b.z1,
+                          door_hw=dhw,
+                          floor_t=a.floor_t, wall_t=a.wall_t, ceil_t=a.ceil_t)
+    elif b.y1 >= a.y2:
+        gap = b.y1 - a.y2
+        dhw = _dhw(gap, a.w, b.w)
+        result = _pick_overlap_center(a.x1, a.x2, b.x1, b.x2, dhw)
+        if result is not None:
+            xc, dhw = result
+            return Bridge(i, j, 'y', xc, a.y2, a.z1, xc, b.y1, b.z1,
+                          door_hw=dhw,
+                          floor_t=a.floor_t, wall_t=a.wall_t, ceil_t=a.ceil_t)
+    elif a.y1 >= b.y2:
+        gap = a.y1 - b.y2
+        dhw = _dhw(gap, a.w, b.w)
+        result = _pick_overlap_center(a.x1, a.x2, b.x1, b.x2, dhw)
+        if result is not None:
+            xc, dhw = result
+            return Bridge(i, j, 'y', xc, a.y1, a.z1, xc, b.y2, b.z1,
+                          door_hw=dhw,
+                          floor_t=a.floor_t, wall_t=a.wall_t, ceil_t=a.ceil_t)
+    return None
+
+
+def build_bridges(rooms: List[Room]):
+    """Build sequential bridges plus optional shortcut bridges for multi-route.
+
+    Sequential bridges connect each room[i] to room[i+1].  Shortcut bridges
+    connect room[i] to room[i+2] or room[i+3] when their centroids are close
+    enough (Manhattan distance < 1200 units), creating parallel paths.
+
+    Returns ``(bridges, all_pairs)`` where *all_pairs* includes containment
+    pairs (rooms that share XY space without needing a corridor brush).
+    """
+    bridges: List[Bridge] = []
+    paired: set = set()
+
+    for i in range(len(rooms) - 1):
+        br = _try_bridge(i, i + 1, rooms)
+        if br is not None:
+            bridges.append(br)
+            paired.add((i, i + 1))
+        else:
+            a, b = rooms[i], rooms[i + 1]
+            if _xy_overlap(a.x1, a.y1, a.x2, a.y2, b.x1, b.y1, b.x2, b.y2):
+                paired.add((i, i + 1))
+
+    for i in range(len(rooms)):
+        for skip in (2, 3):
+            j = i + skip
+            if j >= len(rooms):
+                break
+            if (i, j) in paired:
+                continue
+            a, b = rooms[i], rooms[j]
+            dist = abs(a.cx() - b.cx()) + abs(a.cy() - b.cy())
+            if dist < 1200:
+                br = _try_bridge(i, j, rooms)
+                if br is not None:
+                    bridges.append(br)
+                    paired.add((i, j))
+                    break
+
+    return bridges, paired
