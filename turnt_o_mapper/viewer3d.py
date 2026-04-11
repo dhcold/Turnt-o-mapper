@@ -137,6 +137,21 @@ class Viewer3DWidget(QWidget):
         ]
         return [(proj[a], proj[b]) for a, b in edges]
 
+    def _wedge_edges(self, corners):
+        """Return projected edge pairs for an 8-corner sloped prism (ramp).
+
+        corners must be a sequence of 8 (x, y, z) tuples ordered the same
+        way as _box_edges: 0-3 are the bottom face (low end → high end),
+        4-7 are the top face above them.
+        """
+        proj = [self._project(*c) for c in corners]
+        edges = [
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4), (1, 5), (2, 6), (3, 7),
+        ]
+        return [(proj[a], proj[b]) for a, b in edges]
+
     # ── painting ──────────────────────────────────────────────────────────
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -164,16 +179,53 @@ class Viewer3DWidget(QWidget):
         # Bridges first (behind rooms)
         pen_corr = QPen(QColor(T["corr_col"]), 1)
         for br in self._bridges:
-            hw = br.door_hw
-            if br.axis == 'x':
-                bx1, by1, bz1 = min(br.ax, br.bx), br.ay - hw, min(br.az, br.bz)
-                bx2, by2, bz2 = max(br.ax, br.bx), br.ay + hw, min(br.az, br.bz) + DOOR_H
-            else:
-                bx1, by1, bz1 = br.ax - hw, min(br.ay, br.by), min(br.az, br.bz)
-                bx2, by2, bz2 = br.ax + hw, max(br.ay, br.by), min(br.az, br.bz) + DOOR_H
+            hw  = br.door_hw
+            ht  = br.door_ht
+            dz  = abs(br.az - br.bz)
             painter.setPen(pen_corr)
-            for (ax, ay), (bx, by) in self._box_edges(bx1, by1, bz1, bx2, by2, bz2):
-                painter.drawLine(QPointF(ax, ay), QPointF(bx, by))
+
+            if dz >= 32:
+                # Ramp: sloped wedge — low end keeps its z, high end keeps its z.
+                if br.axis == 'x':
+                    if br.ax <= br.bx:
+                        x_lo, z_lo = br.ax, br.az
+                        x_hi, z_hi = br.bx, br.bz
+                    else:
+                        x_lo, z_lo = br.bx, br.bz
+                        x_hi, z_hi = br.ax, br.az
+                    cy = (br.ay + br.by) // 2
+                    corners = [
+                        (x_lo, cy - hw, z_lo),      (x_lo, cy + hw, z_lo),
+                        (x_hi, cy + hw, z_hi),      (x_hi, cy - hw, z_hi),
+                        (x_lo, cy - hw, z_lo + ht), (x_lo, cy + hw, z_lo + ht),
+                        (x_hi, cy + hw, z_hi + ht), (x_hi, cy - hw, z_hi + ht),
+                    ]
+                else:  # 'y'
+                    if br.ay <= br.by:
+                        y_lo, z_lo = br.ay, br.az
+                        y_hi, z_hi = br.by, br.bz
+                    else:
+                        y_lo, z_lo = br.by, br.bz
+                        y_hi, z_hi = br.ay, br.az
+                    cx = (br.ax + br.bx) // 2
+                    corners = [
+                        (cx - hw, y_lo, z_lo),      (cx + hw, y_lo, z_lo),
+                        (cx + hw, y_hi, z_hi),      (cx - hw, y_hi, z_hi),
+                        (cx - hw, y_lo, z_lo + ht), (cx + hw, y_lo, z_lo + ht),
+                        (cx + hw, y_hi, z_hi + ht), (cx - hw, y_hi, z_hi + ht),
+                    ]
+                for (ax, ay), (bx, by) in self._wedge_edges(corners):
+                    painter.drawLine(QPointF(ax, ay), QPointF(bx, by))
+            else:
+                # Flat corridor: plain axis-aligned box at the lower z level.
+                if br.axis == 'x':
+                    bx1, by1, bz1 = min(br.ax, br.bx), br.ay - hw, min(br.az, br.bz)
+                    bx2, by2, bz2 = max(br.ax, br.bx), br.ay + hw, min(br.az, br.bz) + ht
+                else:
+                    bx1, by1, bz1 = br.ax - hw, min(br.ay, br.by), min(br.az, br.bz)
+                    bx2, by2, bz2 = br.ax + hw, max(br.ay, br.by), min(br.az, br.bz) + ht
+                for (ax, ay), (bx, by) in self._box_edges(bx1, by1, bz1, bx2, by2, bz2):
+                    painter.drawLine(QPointF(ax, ay), QPointF(bx, by))
 
         # Rooms (depth sorted)
         for room in sorted_rooms:

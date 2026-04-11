@@ -559,10 +559,11 @@ def rbe_to_map_string(merged_with_mat, mat_tex, sx, sy, sz,
     """
     lines = [
         "// Game: Quake 3",
-        "// Format: Quake 3 (Valve)",
+        "// Format: Quake3 (Valve)",
         "// Imported by Turnt-o-mapper",
         "{",
         '"classname" "worldspawn"',
+        '"mapversion" "220"',
     ]
     for bi, (x1, y1, z1, x2, y2, z2, mat_idx) in enumerate(merged_with_mat):
         qx1, qx2 = x1 * sx, x2 * sx

@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QTextCharFormat, QTextCursor, QFont, QPixmap, QImage,
-    QPainter, QPen, QPainterPath,
+    QPainter, QPen, QPainterPath, QIcon,
 )
 
 try:
@@ -616,6 +616,9 @@ class App(QMainWindow):
         self._dispatch_signal.connect(lambda fn: fn())
         self.setWindowTitle("Turnt-o-mapper")
         self.setMinimumSize(900, 640)
+        _icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
+        if os.path.exists(_icon_path):
+            self.setWindowIcon(QIcon(_icon_path))
 
         self._dark_mode      = True
         self._map_str        = ""
@@ -732,21 +735,26 @@ class App(QMainWindow):
         br_lay.setContentsMargins(0, 4, 0, 4)
         br_lay.setSpacing(6)
 
-        self._btn_save = QPushButton("Save .map")
+        self._btn_save = QPushButton("💾 Save .map")
         self._btn_save.setObjectName("btnSave")
         self._btn_save.clicked.connect(self._on_save)
 
-        self._btn_folder = QPushButton("Open folder")
+        self._btn_open_map = QPushButton("📄 Open .map")
+        self._btn_open_map.setObjectName("btnOpenMap")
+        self._btn_open_map.clicked.connect(self._on_open_map)
+
+        self._btn_folder = QPushButton("📂 Map folder")
         self._btn_folder.setObjectName("btnFolder")
         self._btn_folder.clicked.connect(self._on_open_folder)
 
-        self._btn_launch = QPushButton("Launch game")
+        self._btn_launch = QPushButton("🚀 Launch game")
         self._btn_launch.setObjectName("btnLaunch")
         self._btn_launch.clicked.connect(self._on_launch_game)
 
-        br_lay.addWidget(self._btn_save,   stretch=1)
-        br_lay.addWidget(self._btn_folder, stretch=1)
-        br_lay.addWidget(self._btn_launch, stretch=1)
+        br_lay.addWidget(self._btn_save,     stretch=1)
+        br_lay.addWidget(self._btn_open_map, stretch=1)
+        br_lay.addWidget(self._btn_folder,   stretch=1)
+        br_lay.addWidget(self._btn_launch,   stretch=1)
         lay.addWidget(btn_row)
         return w
 
@@ -1042,8 +1050,8 @@ class App(QMainWindow):
         # sx = 40 × 2.4 = 96  (DBT-X  → Q3-X)
         # sy = 40 × 2.4 = 96  (DBT-Z  → Q3-Y)
         # sz = 20 × 2.2 = 44  (DBT-Y height → Q3-Z)
-        self._spin_rbe_sx = QSpinBox(); self._spin_rbe_sx.setRange(1, 512); self._spin_rbe_sx.setValue(96)
-        self._spin_rbe_sy = QSpinBox(); self._spin_rbe_sy.setRange(1, 512); self._spin_rbe_sy.setValue(96)
+        self._spin_rbe_sx = QSpinBox(); self._spin_rbe_sx.setRange(1, 512); self._spin_rbe_sx.setValue(48)
+        self._spin_rbe_sy = QSpinBox(); self._spin_rbe_sy.setRange(1, 512); self._spin_rbe_sy.setValue(48)
         self._spin_rbe_sz = QSpinBox(); self._spin_rbe_sz.setRange(1, 512); self._spin_rbe_sz.setValue(44)
         for lbl_txt, sb in [("X:", self._spin_rbe_sx), ("Y:", self._spin_rbe_sy),
                              ("Z (height):", self._spin_rbe_sz)]:
@@ -1052,7 +1060,7 @@ class App(QMainWindow):
             sb.valueChanged.connect(self._schedule_save)
         lay.addWidget(sc_row)
 
-        hint_scale = QLabel("Defaults — x×2.4  y×2.4  z(height)×2.2  →  96 / 96 / 44  |  angles: degrees")
+        hint_scale = QLabel("40 → 48   40 → 48   40 → 44  |  angles: degrees")
         hint_scale.setObjectName("dimLabel")
         lay.addWidget(hint_scale)
 
@@ -1654,6 +1662,19 @@ class App(QMainWindow):
             self._log(f"{'Saved' if manual else 'Auto-saved'}: {path}", "info")
         except Exception as e:
             self._log(f"Save error: {e}", "error")
+
+    def _on_open_map(self):
+        path = self._last_map_path
+        if not path or not os.path.exists(path):
+            self._log("No .map saved yet.", "warn")
+            return
+        try:
+            if os.name == 'nt':
+                os.startfile(path)
+            else:
+                subprocess.run(['xdg-open', path])
+        except Exception as ex:
+            self._log(f"Cannot open .map: {ex}", "error")
 
     def _on_open_folder(self):
         folder = self._edit_out_folder.text().strip() or os.getcwd()
