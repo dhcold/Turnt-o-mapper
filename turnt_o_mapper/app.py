@@ -645,7 +645,7 @@ class App(QMainWindow):
         self._randomize_seed(silent=True)
         self._log("Turnt-o-mapper ready. Configure and hit Generate!", "info")
 
-        # Auto-update check (background, non-blocking)
+        # Always check for updates (to show indicator); auto-download only if enabled
         check_for_update(self._on_update_available)
 
     # ── UI construction ───────────────────────────────────────────────────
@@ -696,8 +696,24 @@ class App(QMainWindow):
         sub = QLabel(".map generator + DBT importer")
         sub.setObjectName("titleSub")
 
-        lbl_ver = QLabel(f"v{__version__}")
-        lbl_ver.setObjectName("versionLabel")
+        # Version label — clickable, links to GitHub releases
+        self._lbl_ver = QPushButton(f"v{__version__}")
+        self._lbl_ver.setFlat(True)
+        self._lbl_ver.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._lbl_ver.setToolTip("Open GitHub Releases")
+        self._lbl_ver.setStyleSheet(
+            f"color:{T['text_dim']}; font-size:8pt; border:none; padding:2px 6px;")
+        self._lbl_ver.clicked.connect(
+            lambda: __import__('webbrowser').open("https://github.com/dhcold/Turnt-o-mapper/releases"))
+
+        # Warning icon + update button (hidden until update is found)
+        self._btn_update = QPushButton("Update")
+        self._btn_update.setObjectName("btnSmall")
+        self._btn_update.setToolTip("Download and install the latest version")
+        self._btn_update.hide()
+        self._update_url = ""
+        self._update_version = ""
+        self._btn_update.clicked.connect(self._do_manual_update)
 
         lay.addWidget(turnt)
         lay.addWidget(mapper)
@@ -706,7 +722,8 @@ class App(QMainWindow):
         lay.addSpacing(14)
         lay.addWidget(sub)
         lay.addStretch()
-        lay.addWidget(lbl_ver)
+        lay.addWidget(self._btn_update)
+        lay.addWidget(self._lbl_ver)
         return hdr
 
     # ── Left panel ────────────────────────────────────────────────────────
@@ -841,6 +858,32 @@ class App(QMainWindow):
         sep = QFrame(); sep.setObjectName("secSep"); sep.setFrameShape(QFrame.Shape.HLine)
         lay.addWidget(sep)
 
+        # Layout style
+        lay.addWidget(_sec_widget("Layout style"))
+        self._current_layout = "Zigzag"
+        layout_names = ["Linear", "Zigzag", "Snake", "Random", "Spiral", "Multilevel"]
+        layout_grid = QWidget()
+        lg = QGridLayout(layout_grid)
+        lg.setContentsMargins(0, 0, 0, 4)
+        lg.setSpacing(4)
+        self._layout_group = QButtonGroup(self)
+        self._layout_group.setExclusive(True)
+        self._layout_btns: Dict[str, QPushButton] = {}
+        for i, name in enumerate(layout_names):
+            btn = QPushButton(name)
+            btn.setCheckable(True)
+            btn.setChecked(name == "Zigzag")
+            btn.setObjectName("btnLayout")
+            btn.clicked.connect(lambda checked, n=name: self._select_layout(n))
+            self._layout_group.addButton(btn, i)
+            self._layout_btns[name] = btn
+            lg.addWidget(btn, i // 3, i % 3)
+            lg.setColumnStretch(i % 3, 1)
+        lay.addWidget(layout_grid)
+
+        sep_ls = QFrame(); sep_ls.setObjectName("secSep"); sep_ls.setFrameShape(QFrame.Shape.HLine)
+        lay.addWidget(sep_ls)
+
         # Room sizes grid
         lay.addWidget(_sec_widget("Room settings"))
         sz_grid = QWidget()
@@ -972,31 +1015,6 @@ class App(QMainWindow):
         lay.addWidget(phy_grid)
         self._toggle_physics()
 
-        sep3 = QFrame(); sep3.setObjectName("secSep"); sep3.setFrameShape(QFrame.Shape.HLine)
-        lay.addWidget(sep3)
-
-        # Layout style
-        lay.addWidget(_sec_widget("Layout style"))
-        self._current_layout = "Zigzag"
-        layout_names = ["Linear", "Zigzag", "Snake", "Random", "Spiral", "Multilevel"]
-        layout_grid = QWidget()
-        lg = QGridLayout(layout_grid)
-        lg.setContentsMargins(0, 0, 0, 4)
-        lg.setSpacing(4)
-        self._layout_group = QButtonGroup(self)
-        self._layout_group.setExclusive(True)
-        self._layout_btns: Dict[str, QPushButton] = {}
-        for i, name in enumerate(layout_names):
-            btn = QPushButton(name)
-            btn.setCheckable(True)
-            btn.setChecked(name == "Zigzag")
-            btn.setObjectName("btnLayout")
-            btn.clicked.connect(lambda checked, n=name: self._select_layout(n))
-            self._layout_group.addButton(btn, i)
-            self._layout_btns[name] = btn
-            lg.addWidget(btn, i // 3, i % 3)
-            lg.setColumnStretch(i % 3, 1)
-        lay.addWidget(layout_grid)
         lay.addStretch()
         return scroll
 
@@ -1152,26 +1170,33 @@ class App(QMainWindow):
             self._load_thumb_qt(tex_name, thumb, 16)
 
             # Name button
-            name_btn = QPushButton(tex_name)
+            # Texture name — truncated with ellipsis so F/W/C always fit
+            short = tex_name.replace("turnt/turnt_", "").replace("turnt/", "")
+            name_btn = QPushButton(short)
             name_btn.setFlat(True)
+            name_btn.setToolTip(tex_name)
             name_btn.setStyleSheet(
                 f"text-align:left; color:{T['text']}; font-family:Consolas; font-size:7pt;"
-                f" background:transparent; border:none;")
+                f" background:transparent; border:none; padding:0 2px;")
+            name_btn.setMaximumWidth(100)
             name_btn.clicked.connect(lambda _, t=tex_name: self._show_tex_preview(t))
             rh.addWidget(name_btn, stretch=1)
 
-            # F/W/C checkboxes
+            # F/W/C checkboxes — minimum width so text is never clipped
             floor_cb = QCheckBox("F")
-            floor_cb.setStyleSheet(f"color:{T['success']}; font-size:7pt;")
+            floor_cb.setStyleSheet(f"color:{T['success']}; font-size:7pt; spacing:1px;")
             floor_cb.setChecked(tex_name in FLOOR_TEX)
+            floor_cb.setMinimumWidth(32)
 
             wall_cb = QCheckBox("W")
-            wall_cb.setStyleSheet(f"color:{T['accent2']}; font-size:7pt;")
+            wall_cb.setStyleSheet(f"color:{T['accent2']}; font-size:7pt; spacing:1px;")
             wall_cb.setChecked(tex_name in WALL_TEX)
+            wall_cb.setMinimumWidth(34)
 
             ceil_cb = QCheckBox("C")
-            ceil_cb.setStyleSheet(f"color:{T['accent']}; font-size:7pt;")
+            ceil_cb.setStyleSheet(f"color:{T['accent']}; font-size:7pt; spacing:1px;")
             ceil_cb.setChecked(tex_name in CEIL_TEX)
+            ceil_cb.setMinimumWidth(32)
 
             for cb in (floor_cb, wall_cb, ceil_cb):
                 cb.stateChanged.connect(self._update_tex_lists)
@@ -1292,6 +1317,12 @@ class App(QMainWindow):
         lay.addWidget(self._chk_prev_labels)
         lay.addWidget(self._chk_prev_hmap)
         lay.addWidget(self._chk_prev_ramps)
+
+        lay.addWidget(_sec_widget("Updates"))
+        self._chk_autoupdate = QCheckBox("Auto-update on startup")
+        self._chk_autoupdate.setChecked(True)
+        self._chk_autoupdate.stateChanged.connect(self._schedule_save)
+        lay.addWidget(self._chk_autoupdate)
 
         lay.addWidget(_sec_widget("Appearance"))
         theme_row = QWidget()
@@ -1489,6 +1520,10 @@ class App(QMainWindow):
             self._chk_prev_hmap.setChecked(cfg["prev_hmap"])
         if cfg.get("prev_ramps") is not None:
             self._chk_prev_ramps.setChecked(cfg["prev_ramps"])
+        if cfg.get("autoupdate") is not None:
+            self._chk_autoupdate.setChecked(cfg["autoupdate"])
+        if cfg.get("window_w") and cfg.get("window_h"):
+            self.resize(cfg["window_w"], cfg["window_h"])
         if "dark_mode" in cfg:
             dark = bool(cfg["dark_mode"])
             self._theme_toggle.set_dark(dark, animate=False)
@@ -1518,6 +1553,9 @@ class App(QMainWindow):
             "prev_hmap":    self._chk_prev_hmap.isChecked(),
             "prev_ramps":   self._chk_prev_ramps.isChecked(),
             "dark_mode":    self._theme_toggle.is_dark(),
+            "autoupdate":   self._chk_autoupdate.isChecked(),
+            "window_w":     self.width(),
+            "window_h":     self.height(),
         }
         for lbl, sb in self._sz.items():
             d[f"sz_{lbl}"] = sb.value()
@@ -1659,7 +1697,7 @@ class App(QMainWindow):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(self._map_str)
             self._last_map_path = path
-            self._log(f"{'Saved' if manual else 'Auto-saved'}: {path}", "info")
+            self._log(f"{'Saved' if manual else 'Auto-saved'}: {path.replace(chr(92), '/')}", "info")
         except Exception as e:
             self._log(f"Save error: {e}", "error")
 
@@ -1869,25 +1907,30 @@ class App(QMainWindow):
 
     # ── Auto-update ───────────────────────────────────────────────────────
     def _on_update_available(self, version: str, url: str):
-        self._ui(lambda v=version, u=url: self._show_update_banner(v, u))
+        self._ui(lambda v=version, u=url: self._show_update_available(v, u))
 
-    def _show_update_banner(self, version: str, url: str):
-        banner = QWidget()
-        banner.setObjectName("updateBanner")
-        banner.setFixedHeight(36)
-        row = QHBoxLayout(banner)
-        row.setContentsMargins(12, 4, 12, 4)
-        lbl = QLabel(f"  Update v{version} available!")
-        btn_update = QPushButton("Update now")
-        btn_update.setObjectName("btnSmall")
-        btn_update.clicked.connect(
-            lambda: download_and_restart(url, version, self._status_bar.showMessage))
-        btn_dismiss = QPushButton("✕")
-        btn_dismiss.setObjectName("btnSmall")
-        btn_dismiss.setFixedWidth(28)
-        btn_dismiss.clicked.connect(banner.hide)
-        row.addWidget(lbl)
-        row.addStretch()
-        row.addWidget(btn_update)
-        row.addWidget(btn_dismiss)
-        self._root_layout.insertWidget(1, banner)
+    def _show_update_available(self, version: str, url: str):
+        self._update_url = url
+        self._update_version = version
+        # Show warning on version label + reveal update button
+        self._lbl_ver.setText(f"v{__version__}  \u26a0")
+        self._lbl_ver.setToolTip(f"v{version} available — click to view releases")
+        self._lbl_ver.setStyleSheet(
+            f"color:{T['warning']}; font-size:8pt; font-weight:bold;"
+            f" border:none; padding:2px 6px;")
+        self._btn_update.setText(f"Update to v{version}")
+        self._btn_update.show()
+        self._log(f"Update available: v{__version__} -> v{version}", "info")
+        # Auto-download if setting is enabled
+        if self._chk_autoupdate.isChecked():
+            self._do_manual_update()
+
+    def _do_manual_update(self):
+        if not self._update_url:
+            return
+        self._log(f"Updating from v{__version__} to v{self._update_version}...", "info")
+        self._btn_update.setEnabled(False)
+        self._btn_update.setText("Updating...")
+        download_and_restart(
+            self._update_url, self._update_version,
+            self._status_bar.showMessage)

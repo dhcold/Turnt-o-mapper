@@ -16,7 +16,7 @@ from typing import List, Optional, Tuple, Dict
 
 from .constants import (
     FLOOR_TEX, WALL_TEX, CEIL_TEX,
-    DOOR_H, WALL_T,
+    DOOR_H, WALL_T, MIN_SLOPE_RATIO,
 )
 from .models import Room, Bridge
 
@@ -178,17 +178,17 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
     rooms: List[Room] = []
     cx, cy, cz = 0, 0, 0
 
-    ZONE_SIZE = 4
-    _zone_cache: Dict[int, tuple] = {}
+    # Pick ONE cohesive texture set for the entire map, plus a secondary
+    # accent used for outline borders.
+    _map_floor = random.choice(FLOOR_TEX)
+    _map_wall  = random.choice(WALL_TEX)
+    _map_ceil  = random.choice(CEIL_TEX)
+    # Accent: pick a different wall texture for outlines
+    _accent_candidates = [t for t in WALL_TEX if t != _map_wall]
+    _map_accent = random.choice(_accent_candidates) if _accent_candidates else _map_wall
 
-    def _zone_tex(zone: int):
-        if zone not in _zone_cache:
-            _zone_cache[zone] = (
-                random.choice(FLOOR_TEX),
-                random.choice(WALL_TEX),
-                random.choice(CEIL_TEX),
-            )
-        return _zone_cache[zone]
+    def _zone_tex(_zone: int):
+        return (_map_floor, _map_wall, _map_ceil)
 
     layout = cfg.get("layout_style", "Zigzag")
     rpt    = max(1, cfg.get("rooms_per_turn", 3))
@@ -201,7 +201,17 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
     axis = 'x'
     rooms_in_seg    = 0
     seg_turn_at     = rpt
-    prev_was_corner = False
+    rooms_since_corner = 999          # large default so early rooms can have Z var
+    rooms_since_ramp   = 999          # ensure >=2 rooms gap between ramps
+    prev_was_corner_room = False
+
+    # Spiral ring tracking: each ring = 4 turns (one full revolution).
+    # Alternate Z direction per ring and grow gap to expand outward.
+    spiral_turns    = 0
+    spiral_ring     = 0
+    spiral_z_dir    = 1               # 1 = up, -1 = down
+    spiral_gap_grow = 0               # extra gap per ring for XY expansion
+    ramp_buffer = min(2, (rpt - 1) // 2)  # adaptive: rpt1→0, rpt2→0, rpt3→1, rpt>=5→2
 
     for i in range(n):
         # Detect corner: turn will happen after this room
@@ -214,15 +224,30 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
 
         room_len, room_cross, room_h, door_hw, u_i = _room_dims_from_physics(i, cfg)
 
-        # Widen corner rooms for crouchslide turns
+        # Corner rooms: constrain travel dim so the room does not
+        # protrude beyond the footprint of the previous room.
+        # Widen cross dim (1.3x) so there is space for a crouchslide
+        # turn.  The room right after a corner also gets a wider cross.
         if is_corner_room and i > 0:
-            corner_scale = random.uniform(1.3, 1.6)
-            max_w = cfg.get("max_w", 1536)
+            prev = rooms[i - 1]
+            prev_cross = prev.d if prev.travel_axis == 'x' else prev.w
             max_d = cfg.get("max_d", 512)
-            room_len   = _snap(min(int(room_len   * corner_scale), max_w))
-            room_cross = _snap(min(int(room_cross * corner_scale), max_d))
+            room_cross = _snap(min(int(room_cross * 1.3), max_d))
+            # Ensure travel dim (old direction) never exceeds cross (turn
+            # direction) so the "tail" always points toward the new route.
+            room_len   = _snap(min(room_len, prev_cross, room_cross))
             corr_frac  = cfg.get("corridor_width_frac", 0.67)
             door_hw    = _snap(_clamp(int(room_cross * corr_frac / 2), 32, room_cross // 2))
+        elif prev_was_corner_room and i > 0:
+            max_d = cfg.get("max_d", 512)
+            room_cross = _snap(min(int(room_cross * 1.2), max_d))
+            corr_frac  = cfg.get("corridor_width_frac", 0.67)
+            door_hw    = _snap(_clamp(int(room_cross * corr_frac / 2), 32, room_cross // 2))
+
+        # Enforce minimum dimensions (corner capping can produce tiny values)
+        min_dim = cfg.get("min_d", 192)
+        room_len   = max(room_len, min_dim)
+        room_cross = max(room_cross, min_dim)
 
         if layout in ("Random", "Spiral", "Multilevel"):
             if dx != 0:
@@ -238,25 +263,41 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
             else:
                 w, d = room_cross, room_len
 
-        # Z variation (only on the room immediately after a corner)
+        # Z variation (only when far enough from corners AND from other ramps).
+        # Caps:
+        #   - floor dz <= 50 % of previous room height
+        #   - ramp angle <= 30 deg given available run-up
+        #   - both rooms must be at least 256u long (MIN_FLAT) for ramp space
         if i > 0 and cfg.get("height_var", True):
-            prev_h = rooms[i - 1].h
-            if not prev_was_corner:
+            prev_room = rooms[i - 1]
+            prev_h = prev_room.h
+            prev_len = prev_room.w if prev_room.travel_axis == 'x' else prev_room.d
+            # Only block ramps if BOTH rooms are too short for any ramp
+            too_short = room_len < 192 and prev_len < 192
+            if rooms_since_corner <= ramp_buffer or rooms_since_ramp < 2 or too_short:
                 dz = 0
             else:
+                height_cap = _snap(int(prev_h * 0.5), 32)
+                avail_len = 64 + min(room_len, prev_len) // 2
+                angle_cap = _snap(int(avail_len / MIN_SLOPE_RATIO), 32)
                 if layout == "Multilevel":
-                    max_step = max(128, int(prev_h * 0.75))
-                    max_step = _snap(max_step, 64)
+                    max_step = _snap(min(height_cap, angle_cap), 64)
+                    max_step = max(64, max_step)
                     dz_choices = [max_step // 2, max_step, -max_step // 2, -max_step,
                                   max_step // 4, -max_step // 4]
+                elif layout == "Spiral":
+                    # Consistent Z direction per ring (up or down)
+                    max_step = _snap(min(height_cap, angle_cap), 32)
+                    max_step = max(32, max_step)
+                    half = max_step // 2
+                    sz = spiral_z_dir
+                    dz_choices = [sz * half, sz * max_step]
                 else:
-                    max_step = max(64, int(prev_h * 0.5))
-                    max_step = _snap(max_step, 32)
+                    max_step = _snap(min(height_cap, angle_cap), 32)
+                    max_step = max(32, max_step)
                     half     = max_step // 2
                     dz_choices = [half, max_step, -half, -max_step]
                 dz = random.choice(dz_choices)
-                if i == 1:
-                    dz = min(dz, 0)
             cz += dz
             cz  = _snap(cz, 32)
             prev_ceil = rooms[i - 1].z1 + rooms[i - 1].h
@@ -266,20 +307,25 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
             else:
                 cz = max(cz, -2048)
 
-        # Z collision avoidance for folding layouts
+        # Z collision avoidance for folding layouts.
+        # Use a clearance proportional to room height so that floor levels
+        # remain visually separated even after ceiling alignment inflates
+        # room heights.  This keeps post-alignment Z overlap under ~40 %.
         if layout in ("Random", "Spiral", "Multilevel") and i > 0:
-            CLEARANCE = 64
+            CLEARANCE = max(64, int(room_h * 0.6))
             prev_room = rooms[i - 1]
-            real_conflicts = [
+
+            xy_overlaps = [
                 r for r in rooms
                 if r is not prev_room
-                and _xy_overlap(cx, cy, cx + w, cy + d, r.x1, r.y1, r.x2, r.y2)
+                and _xy_overlap(cx, cy, cx + w, cy + d,
+                                r.x1, r.y1, r.x2, r.y2)
                 and r.z1 < cz + room_h + CLEARANCE
                 and cz < r.z1 + r.h + CLEARANCE
             ]
-            if real_conflicts:
-                ov_z_ceil  = max(r.z1 + r.h for r in real_conflicts)
-                ov_z_floor = min(r.z1       for r in real_conflicts)
+            if xy_overlaps:
+                ov_z_ceil  = max(r.z1 + r.h for r in xy_overlaps)
+                ov_z_floor = min(r.z1       for r in xy_overlaps)
                 z_above = _snap(ov_z_ceil  + CLEARANCE, 32)
                 z_below = _snap(ov_z_floor - room_h - CLEARANCE, 32)
                 if abs(z_above - prev_room.z1) <= abs(z_below - prev_room.z1):
@@ -291,11 +337,19 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
                 else:
                     cz = max(cz, -2048)
 
-        _ft, _wt, _ct = _zone_tex(i // ZONE_SIZE)
+        # Update ramp counter based on ACTUAL height diff (after all Z
+        # adjustments including collision avoidance).
+        if i > 0 and abs(cz - rooms[i - 1].z1) >= 32:
+            rooms_since_ramp = 0
+        else:
+            rooms_since_ramp += 1
+
+        _ft, _wt, _ct = _zone_tex(i)
         r = Room(x=cx, y=cy, z=cz,
                  w=w, d=d, h=room_h,
                  idx=i,
                  floor_t=_ft, wall_t=_wt, ceil_t=_ct,
+                 accent_t=_map_accent,
                  travel_axis=t_axis,
                  speed_in=u_i,
                  door_hw=door_hw)
@@ -303,6 +357,8 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
 
         reach = u_i * t_air
         gap   = max(64, _snap(random.uniform(0.0, reach * 0.25)))
+        if layout == "Spiral":
+            gap += spiral_gap_grow
 
         # Advance cursor
         if layout in ("Random", "Spiral", "Multilevel"):
@@ -314,7 +370,11 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
             else:
                 cy += d + gap
 
-        prev_was_corner = is_corner_room
+        prev_was_corner_room = is_corner_room
+        if is_corner_room:
+            rooms_since_corner = 0
+        else:
+            rooms_since_corner += 1
 
         # Turn logic
         rooms_in_seg += 1
@@ -341,6 +401,11 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
             elif layout == "Spiral":
                 dir_idx = (dir_idx + 1) % 4
                 dx, dy  = DIRS[dir_idx]
+                spiral_turns += 1
+                if spiral_turns % 4 == 0:
+                    spiral_ring += 1
+                    spiral_z_dir *= -1       # alternate up/down each ring
+                    spiral_gap_grow += 32    # gentle outward expansion
             else:
                 prev_axis = axis
                 axis = 'y' if axis == 'x' else 'x'
@@ -458,7 +523,42 @@ def build_bridges(rooms: List[Room]):
         else:
             a, b = rooms[i], rooms[i + 1]
             if _xy_overlap(a.x1, a.y1, a.x2, a.y2, b.x1, b.y1, b.x2, b.y2):
-                paired.add((i, i + 1))
+                floor_dz = abs(a.z1 - b.z1)
+                if floor_dz < 32:
+                    # Same level, shared open space — no bridge needed
+                    paired.add((i, i + 1))
+                else:
+                    # Overlapping XY but different Z — need a ramp bridge.
+                    # Pick the dominant overlap axis and create one.
+                    xov = min(a.x2, b.x2) - max(a.x1, b.x1)
+                    yov = min(a.y2, b.y2) - max(a.y1, b.y1)
+                    hw = min(a.door_hw, b.door_hw)
+                    if xov >= yov:
+                        xc = (max(a.x1, b.x1) + min(a.x2, b.x2)) // 2
+                        xc = _snap(xc)
+                        bridges.append(Bridge(
+                            i, i + 1, 'y',
+                            xc, a.y2 if a.cy() < b.cy() else a.y1, a.z1,
+                            xc, b.y1 if a.cy() < b.cy() else b.y2, b.z1,
+                            door_hw=min(hw, xov // 2),
+                            floor_t=a.floor_t, wall_t=a.wall_t, ceil_t=a.ceil_t))
+                    else:
+                        yc = (max(a.y1, b.y1) + min(a.y2, b.y2)) // 2
+                        yc = _snap(yc)
+                        bridges.append(Bridge(
+                            i, i + 1, 'x',
+                            a.x2 if a.cx() < b.cx() else a.x1, yc, a.z1,
+                            b.x1 if a.cx() < b.cx() else b.x2, yc, b.z1,
+                            door_hw=min(hw, yov // 2),
+                            floor_t=a.floor_t, wall_t=a.wall_t, ceil_t=a.ceil_t))
+                    paired.add((i, i + 1))
+
+    # Collect which rooms already have ramp bridges
+    ramp_rooms: set = set()
+    for br in bridges:
+        if abs(br.bz - br.az) >= 32:
+            ramp_rooms.add(br.room_a)
+            ramp_rooms.add(br.room_b)
 
     for i in range(len(rooms)):
         for skip in (2, 3):
@@ -472,8 +572,16 @@ def build_bridges(rooms: List[Room]):
             if dist < 1200:
                 br = _try_bridge(i, j, rooms)
                 if br is not None:
+                    # Skip shortcut if it would create a ramp and either
+                    # endpoint already touches an existing ramp bridge
+                    if abs(br.bz - br.az) >= 32:
+                        if i in ramp_rooms or j in ramp_rooms:
+                            continue
                     bridges.append(br)
                     paired.add((i, j))
+                    if abs(br.bz - br.az) >= 32:
+                        ramp_rooms.add(i)
+                        ramp_rooms.add(j)
                     break
 
     return bridges, paired
