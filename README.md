@@ -12,10 +12,14 @@ Design a full map layout in seconds: choose room count, dimensions, corridor wid
 ## Features
 
 - **6 layout strategies** — Linear, Zigzag, Snake, Random, Spiral, Multilevel
+- **Smart ramp generation** — slopes capped at 30 deg, 256u flat run-up, min 1 room gap between ramps, adaptive distance from corners
+- **Unified art style** — one cohesive texture set per map with accent outline borders on floors and mint-colored ramp surfaces
+- **Corner room geometry** — corners sized to fit neighboring rooms with crouchslide-width cross sections; no "tails" in the wrong direction
+- **Z collision avoidance** — folding layouts (Random/Spiral/Multilevel) separate overlapping rooms by 60 % of room height for distinct floor levels
 - **Interactive 2D preview** — scroll to zoom, drag to pan, double-click to fit
 - **Interactive 3D wireframe** — drag to rotate, WASD to pan, scroll to zoom, Iso/Top/Front/Side presets
 - **Physics model** — acceleration-based speed simulation per room segment
-- **Texture selector** — assign floor / wall / ceiling textures with live preview
+- **Texture selector** — assign floor / wall / ceiling textures with F/W/C checkboxes; the generator picks one set per map from the enabled pool
 - **Diabotical `.rbe` importer** — import existing DBT maps with configurable XYZ scale
 - **Auto-update** — checks GitHub Releases on startup and downloads new versions automatically
 
@@ -80,7 +84,9 @@ pyinstaller --onefile --windowed --name turnt-o-mapper main.py
 ### Textures tab
 - Assign textures to **Floor**, **Wall**, and **Ceiling** categories using the F/W/C checkboxes
 - Set the **Texture folder** path in Settings to see live thumbnails
-- The generator picks randomly from each category per room
+- The generator picks one unified texture set per map from the enabled pool
+- Floor outlines use an accent texture (a different wall texture) for visual detail
+- Ramp surfaces use `turnt/turnt_mint_2t` for visibility
 
 ### Settings tab
 - **Output .map file** — where the generated file is saved
@@ -119,10 +125,10 @@ turnt_o_mapper/
   app.py                 Main window (PyQt6 UI)
   preview2d.py           2D top-down preview widget
   viewer3d.py            3D wireframe preview widget
-  generation.py          Map generation orchestrator
-  layout.py              Room placement & corridor routing
-  brushes.py             Quake 3 brush/face geometry
-  entities.py            Spawn, trigger, checkpoint entities
+  generation.py          Map generation orchestrator + bridge footprint clipping
+  layout.py              Room placement, corridor routing, Z collision avoidance
+  brushes.py             Quake 3 brush/face geometry (rooms, ramps, outlines)
+  entities.py            Spawn, trigger, checkpoint entities + footprint/wall clips
   dbt_import.py          Diabotical .rbe importer
   constants.py           Texture registry, theme colours, geometry params
   models.py              Room & Bridge dataclasses

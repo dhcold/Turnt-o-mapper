@@ -18,6 +18,8 @@ jobs:
               --windowed
               --name turnt-o-mapper
               --collect-all PyQt6
+              --icon turnt_o_mapper/icon.ico
+              --add-data "turnt_o_mapper/icon.ico;turnt_o_mapper"
             dist_file: turnt-o-mapper.exe
 
           - os: macos-latest
@@ -26,6 +28,7 @@ jobs:
               --onefile
               --windowed
               --name turnt-o-mapper
+              --add-data "turnt_o_mapper/icon.ico:turnt_o_mapper"
             dist_file: turnt-o-mapper
 
           - os: ubuntu-latest
@@ -33,6 +36,7 @@ jobs:
             pyinstaller_args: >-
               --onefile
               --name turnt-o-mapper
+              --add-data "turnt_o_mapper/icon.ico:turnt_o_mapper"
             dist_file: turnt-o-mapper
 
     runs-on: ${{ matrix.os }}
