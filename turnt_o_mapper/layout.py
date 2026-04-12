@@ -224,18 +224,22 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
 
         room_len, room_cross, room_h, door_hw, u_i = _room_dims_from_physics(i, cfg)
 
-        # Corner rooms: constrain travel dim so the room does not
-        # protrude beyond the footprint of the previous room.
-        # Widen cross dim (1.3x) so there is space for a crouchslide
-        # turn.  The room right after a corner also gets a wider cross.
+        # Corner rooms: constrain dimensions so the room does not
+        # protrude beyond the footprint of its neighbours, eliminating
+        # misleading "tails" that look like valid routes.
+        #   • room_len  (old direction) ≤ width of room X-1
+        #   • room_cross (new direction) ≤ depth of room X+1  (forward-look)
         if is_corner_room and i > 0:
             prev = rooms[i - 1]
             prev_cross = prev.d if prev.travel_axis == 'x' else prev.w
             max_d = cfg.get("max_d", 512)
             room_cross = _snap(min(int(room_cross * 1.3), max_d))
-            # Ensure travel dim (old direction) never exceeds cross (turn
-            # direction) so the "tail" always points toward the new route.
             room_len   = _snap(min(room_len, prev_cross, room_cross))
+            # Forward-look: cap cross to the next room's expected cross
+            # so the corner doesn't extend beyond the post-turn corridor.
+            if i + 1 < n:
+                _next_len, next_cross, *_ = _room_dims_from_physics(i + 1, cfg)
+                room_cross = _snap(min(room_cross, next_cross))
             corr_frac  = cfg.get("corridor_width_frac", 0.67)
             door_hw    = _snap(_clamp(int(room_cross * corr_frac / 2), 32, room_cross // 2))
         elif prev_was_corner_room and i > 0:
@@ -298,6 +302,11 @@ def place_rooms(n: int, cfg: dict) -> List[Room]:
                     half     = max_step // 2
                     dz_choices = [half, max_step, -half, -max_step]
                 dz = random.choice(dz_choices)
+                # Early rooms: up-ramps from room 3+ (i>=2), down-ramps from room 2+ (i>=1)
+                if dz > 0 and i < 2:
+                    dz = 0    # no up-ramps before room 3
+                if dz < 0 and i < 1:
+                    dz = 0    # no down-ramps before room 2 (dead code: i>0 above)
             cz += dz
             cz  = _snap(cz, 32)
             prev_ceil = rooms[i - 1].z1 + rooms[i - 1].h

@@ -13,7 +13,7 @@ import random
 
 from .constants import (
     WALL_T, DOOR_H, HIDDEN_TEX,
-    SLOPE_RATIO, MAX_RAMP_ANGLE, MIN_SLOPE_RATIO,
+    SLOPE_RATIO, MIN_RAMP_ANGLE, MAX_RAMP_ANGLE, MIN_SLOPE_RATIO,
     RAMP_TEX, OUTLINE_W,
 )
 from .layout import _clip_footprint, _clip_intervals
@@ -463,19 +463,16 @@ def _wallramp_brushes(room, bi):
 
 
 def _adaptive_ramp_len(dz: int, max_available: int) -> int:
-    """Choose ramp horizontal length with a progressive random angle.
+    """Choose ramp horizontal length — as gentle as possible.
 
-    Picks a random target angle between 15 deg and 25 deg, computes the
-    corresponding ramp length, then clamps to the available space.
-    **Never returns more than max_available** — the caller must reduce
-    dz if the resulting angle would exceed 30 deg.
+    Computes the ideal length for the shallowest angle (MIN_RAMP_ANGLE,
+    10°).  If that doesn't fit, uses all available space — the ramp gets
+    steeper but never exceeds 30° (layout caps dz accordingly).
     """
     if max_available <= 0:
         return max(abs(dz), 1)
-    # Random target between 15° and 25° — variety in ramp feel
-    target_angle = random.uniform(15, 25)
-    target_len = int(dz / math.tan(math.radians(target_angle)))
-    return min(target_len, max_available)
+    ideal_len = int(dz / math.tan(math.radians(MIN_RAMP_ANGLE)))
+    return min(ideal_len, max_available)
 
 
 def compute_bridge_footprint(ax, ay, az, bx, by, bz,
@@ -539,14 +536,12 @@ def corridor_brushes(ax, ay, az, bx, by, bz,
         hi_far = rb_far if ax <= bx else ra_far
 
         def _clamp_dz(actual_len, cur_dz, cur_lo, cur_hi):
-            """Reduce dz so the ramp angle never exceeds 30 deg."""
-            if actual_len <= 0:
-                return cur_lo, cur_hi
-            max_dz = int(actual_len / MIN_SLOPE_RATIO)
-            if cur_hi - cur_lo > max_dz:
-                mid = (cur_lo + cur_hi) // 2
-                cur_lo = mid - max_dz // 2
-                cur_hi = mid + max_dz // 2
+            """Keep ramp endpoints pinned to room floors.
+
+            Layout already caps dz so the angle stays reasonable.
+            A steeper-than-ideal ramp is always better than one that
+            floats in the air and cannot be reached via crouchslide.
+            """
             return cur_lo, cur_hi
 
         if axis == 'x':

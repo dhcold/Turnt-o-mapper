@@ -305,6 +305,21 @@ QPushButton#btnGenerate:pressed {{
     background-color: {t['accent_press']};
 }}
 
+QPushButton#btnCopyHash {{
+    background-color: {t['gen_grad_l']};
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    font-size: 11pt;
+    padding: 10px 0px;
+}}
+QPushButton#btnCopyHash:hover {{
+    background-color: {t['gen_grad_r']};
+}}
+QPushButton#btnCopyHash:pressed {{
+    background-color: {t['accent_press']};
+}}
+
 QPushButton#btnAuto[active="true"] {{
     background-color: {t['auto_bg']};
     color: {t['auto_text']};
@@ -601,6 +616,36 @@ class ThemeToggle(QWidget):
         p.end()
 
 
+# ── Scroll-safe widgets ───────────────────────────────────────────────────────
+# Prevent accidental value changes when the user scrolls through the panel.
+# The mouse wheel only changes the value when the widget has focus (was clicked).
+
+class _SafeSpinBox(QSpinBox):
+    """QSpinBox that ignores the mouse wheel unless it has focus."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()   # let parent scroll area handle it
+
+
+class _SafeSlider(QSlider):
+    """QSlider that ignores the mouse wheel unless it has focus."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
 # ── Helper: section header ────────────────────────────────────────────────────
 def _sec_widget(title: str) -> QWidget:
     w = QWidget()
@@ -643,6 +688,7 @@ class App(QMainWindow):
         self._tex_pixmaps: Dict[str, QPixmap] = {}
         # texture checkbox references: tex_name -> (floor_cb, wall_cb, ceil_cb)
         self._tex_cbs: Dict[str, tuple] = {}
+        self._last_share_hash: str = ""
 
         self._root_layout: Optional[QVBoxLayout] = None
 
@@ -654,6 +700,9 @@ class App(QMainWindow):
 
         self._build_ui()
         self._restore_config()
+
+        # Global Ctrl+V interception for share-hash paste
+        QApplication.instance().installEventFilter(self)
 
         self._randomize_seed(silent=True)
         self._log("Turnt-o-mapper ready. Configure and hit Generate!", "info")
@@ -679,7 +728,7 @@ class App(QMainWindow):
 
         left = self._build_left()
         left.setObjectName("leftPanel")
-        left.setMinimumWidth(360)
+        left.setMinimumWidth(420)
 
         right = self._build_right()
         right.setObjectName("rightPanel")
@@ -835,12 +884,14 @@ class App(QMainWindow):
         rooms_hdr_lay.addStretch()
         rooms_hdr_lay.addWidget(self._lbl_rooms)
 
-        self._spin_rooms = QSpinBox()
+        self._spin_rooms = _SafeSpinBox()
         self._spin_rooms.setRange(2, 100)
         self._spin_rooms.setValue(10)
-        self._slider_rooms = QSlider(Qt.Orientation.Horizontal)
+        self._spin_rooms.setToolTip("Total number of rooms in the map.\nMore rooms = longer map and longer run time.")
+        self._slider_rooms = _SafeSlider(Qt.Orientation.Horizontal)
         self._slider_rooms.setRange(2, 100)
         self._slider_rooms.setValue(10)
+        self._slider_rooms.setToolTip("Total number of rooms in the map.\nMore rooms = longer map and longer run time.")
         self._slider_rooms.valueChanged.connect(
             lambda v: (self._lbl_rooms.setText(str(v)),
                        self._spin_rooms.blockSignals(True),
@@ -862,9 +913,10 @@ class App(QMainWindow):
         rpt_cell2_lay.setSpacing(2)
         rpt_lbl2 = QLabel("ROOMS / SEG")
         rpt_lbl2.setObjectName("secLabel")
-        self._spin_rpt = QSpinBox()
+        self._spin_rpt = _SafeSpinBox()
         self._spin_rpt.setRange(1, 10)
         self._spin_rpt.setValue(3)
+        self._spin_rpt.setToolTip("How many rooms before the route turns.\nLower = more turns and a tighter map.\nOnly affects Zigzag, Snake, Random, Spiral, and Multilevel layouts.")
         self._spin_rpt.valueChanged.connect(self._schedule_save)
         rpt_cell2_lay.addWidget(rpt_lbl2)
         rpt_cell2_lay.addWidget(self._spin_rpt)
@@ -883,21 +935,41 @@ class App(QMainWindow):
         self._btn_auto.setCheckable(True)
         self._btn_auto.setChecked(True)
         self._btn_auto.setProperty("active", "true")
+        self._btn_auto.setToolTip("When ON, a new random seed is picked after each generation.\nTurn OFF to lock the seed and reproduce the same map.")
         self._btn_auto.clicked.connect(self._toggle_autorand)
-        self._spin_seed = QSpinBox()
+        self._spin_seed = _SafeSpinBox()
         self._spin_seed.setRange(0, 9_999_999)
         self._spin_seed.setValue(0)
         self._spin_seed.setReadOnly(True)
         self._spin_seed.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        self._spin_seed.setToolTip("Random seed that determines the exact map layout.\nSame seed + same settings = identical map every time.")
         sr.addWidget(self._btn_auto)
         sr.addWidget(self._spin_seed, stretch=1)
         lay.addWidget(seed_row)
 
-        # Generate button (full-width)
+        # Generate + Copy-hash row
+        gen_row = QWidget()
+        gr = QHBoxLayout(gen_row)
+        gr.setContentsMargins(0, 0, 0, 0)
+        gr.setSpacing(4)
         self._btn_gen = QPushButton("⚡  Generate")
         self._btn_gen.setObjectName("btnGenerate")
+        self._btn_gen.setToolTip("Generate a new .map file using the current settings.\nEach click creates a unique map layout.")
         self._btn_gen.clicked.connect(self._on_generate)
-        lay.addWidget(self._btn_gen)
+        self._btn_export_hash = QPushButton("↗")
+        self._btn_export_hash.setObjectName("btnCopyHash")
+        self._btn_export_hash.setToolTip("Export hash — copy a compact code with all your settings\nto clipboard. Share it with others so they can reproduce\nyour exact map configuration.")
+        self._btn_export_hash.setFixedWidth(42)
+        self._btn_export_hash.clicked.connect(self._on_copy_hash)
+        self._btn_import_hash = QPushButton("↙")
+        self._btn_import_hash.setObjectName("btnCopyHash")
+        self._btn_import_hash.setToolTip("Import hash — paste a tom1_… code from clipboard\nto restore someone else's generation settings.")
+        self._btn_import_hash.setFixedWidth(42)
+        self._btn_import_hash.clicked.connect(self._on_import_hash)
+        gr.addWidget(self._btn_gen, stretch=1)
+        gr.addWidget(self._btn_export_hash)
+        gr.addWidget(self._btn_import_hash)
+        lay.addWidget(gen_row)
 
         # Map name
         name_row = QWidget()
@@ -908,6 +980,7 @@ class App(QMainWindow):
         lbl_n.setObjectName("dimLabel")
         self._edit_map_name_gen = QLineEdit("generated")
         self._edit_map_name_gen.setPlaceholderText("generated")
+        self._edit_map_name_gen.setToolTip("File name for the saved .map file (without extension).\nThis is also used for the texture mapping JSON.")
         suf = QLabel(".map")
         suf.setObjectName("dimLabel")
         nr.addWidget(lbl_n)
@@ -929,11 +1002,20 @@ class App(QMainWindow):
         self._layout_group = QButtonGroup(self)
         self._layout_group.setExclusive(True)
         self._layout_btns: Dict[str, QPushButton] = {}
+        _layout_tips = {
+            "Linear":     "Rooms placed in a straight line.\nSimplest layout — no turns at all.",
+            "Zigzag":     "Route alternates left-right after each segment.\nGood balance of flow and variety.",
+            "Snake":      "Route snakes back and forth in parallel lanes.\nCompact maps with lots of U-turns.",
+            "Random":     "Each segment picks a random direction.\nUnpredictable layouts that may self-intersect.",
+            "Spiral":     "Route spirals outward (or inward) in a coil.\nCreates a natural arena-like shape.",
+            "Multilevel": "Rooms stack vertically with large height changes.\nComplex 3D maps with lots of ramps.",
+        }
         for i, name in enumerate(layout_names):
             btn = QPushButton(name)
             btn.setCheckable(True)
             btn.setChecked(name == "Zigzag")
             btn.setObjectName("btnLayout")
+            btn.setToolTip(_layout_tips.get(name, ""))
             btn.clicked.connect(lambda checked, n=name: self._select_layout(n))
             self._layout_group.addButton(btn, i)
             self._layout_btns[name] = btn
@@ -952,6 +1034,14 @@ class App(QMainWindow):
         g.setSpacing(4)
         labels  = ["Min W", "Max W", "Min D", "Max D", "Min H", "Max H"]
         defvals = [384, 2048, 256, 768, 256, 640]
+        _sz_tips = {
+            "Min W": "Minimum room width (travel direction) in Quake units.\nSmaller = shorter rooms to run through.",
+            "Max W": "Maximum room width (travel direction) in Quake units.\nLarger = longer rooms with more run-up space.",
+            "Min D": "Minimum room depth (lateral side) in Quake units.\nAffects how wide rooms feel side-to-side.",
+            "Max D": "Maximum room depth (lateral side) in Quake units.\nWider rooms give more strafe room.",
+            "Min H": "Minimum ceiling height in Quake units.\nLower ceilings create tighter spaces.",
+            "Max H": "Maximum ceiling height in Quake units.\nHigher ceilings allow bigger jumps.",
+        }
         self._sz: Dict[str, QSpinBox] = {}
         for i, (lbl, val) in enumerate(zip(labels, defvals)):
             r, c = divmod(i, 2)
@@ -960,10 +1050,11 @@ class App(QMainWindow):
             cl.setContentsMargins(0, 0, 0, 0)
             cl.setSpacing(1)
             l = QLabel(lbl); l.setObjectName("dimLabel")
-            sb = QSpinBox()
+            sb = _SafeSpinBox()
             sb.setRange(64, 4096)
             sb.setSingleStep(64)
             sb.setValue(val)
+            sb.setToolTip(_sz_tips.get(lbl, ""))
             sb.valueChanged.connect(self._schedule_save)
             self._sz[lbl] = sb
             cl.addWidget(l)
@@ -990,9 +1081,10 @@ class App(QMainWindow):
         self._lbl_corr.setObjectName("sliderVal")
         corr_hdr_lay.addStretch()
         corr_hdr_lay.addWidget(self._lbl_corr)
-        self._slider_corr = QSlider(Qt.Orientation.Horizontal)
+        self._slider_corr = _SafeSlider(Qt.Orientation.Horizontal)
         self._slider_corr.setRange(25, 100)
         self._slider_corr.setValue(67)
+        self._slider_corr.setToolTip("How wide the corridors between rooms are, as a percentage\nof the room's lateral dimension. 100% = fully open doorways.")
         self._slider_corr.valueChanged.connect(
             lambda v: (self._lbl_corr.setText("100% (open)" if v >= 98 else f"{v}%"),
                        self._schedule_save()))
@@ -1003,9 +1095,11 @@ class App(QMainWindow):
         # Checkboxes
         self._chk_height = QCheckBox("Height variation between rooms")
         self._chk_height.setChecked(True)
+        self._chk_height.setToolTip("When enabled, rooms are placed at different heights\nwith ramps connecting them. Adds verticality to the map.")
         self._chk_height.stateChanged.connect(self._schedule_save)
         self._chk_checks = QCheckBox("Add trigger_checkpoint entities")
         self._chk_checks.setChecked(True)
+        self._chk_checks.setToolTip("Place checkpoint triggers every 10 rooms.\nUsed for race mode timing in the game.")
         self._chk_checks.stateChanged.connect(self._schedule_save)
         lay.addWidget(self._chk_height)
         lay.addWidget(self._chk_checks)
@@ -1016,6 +1110,7 @@ class App(QMainWindow):
         # Physics
         lay.addWidget(_sec_widget("Physics"))
         self._chk_physics = QCheckBox("Use acceleration model")
+        self._chk_physics.setToolTip("Derive room sizes from player speed and physics.\nWhen OFF, room sizes are random within Min/Max ranges.\nWhen ON, rooms grow with speed so the player always has enough space.")
         self._chk_physics.stateChanged.connect(lambda _: (self._toggle_physics(), self._schedule_save()))
         lay.addWidget(self._chk_physics)
 
@@ -1024,23 +1119,28 @@ class App(QMainWindow):
         pg.setContentsMargins(0, 2, 0, 4)
         pg.setSpacing(4)
         phy_params = [
-            ("Base speed (UPS)",       "_spin_u_base",   550, 100, 2000, 10),
-            ("Speed gain / room",      "_spin_u_gain",    60,   0,  300,  5),
-            ("Air time (×0.01 s)",     "_spin_t_air",     68,  30,  150,  1),
-            ("Strafe factor (×0.01)",  "_spin_strafe_f",  20,   5,   40,  1),
+            ("Base speed (UPS)",       "_spin_u_base",   550, 100, 2000, 10,
+             "Starting player speed in units per second.\nHigher = larger first rooms. Affects how roomy the map feels early on."),
+            ("Speed gain / room",      "_spin_u_gain",    60,   0,  300,  5,
+             "How much faster the player gets per room.\nHigher = rooms grow faster, making later rooms much larger."),
+            ("Air time (×0.01 s)",     "_spin_t_air",     68,  30,  150,  1,
+             "Estimated time the player spends airborne (in 0.01s).\nControls how long rooms are relative to player speed."),
+            ("Strafe factor (×0.01)",  "_spin_strafe_f",  20,   5,   40,  1,
+             "How much the player drifts sideways (in 0.01 units).\nAffects room depth — higher = wider rooms."),
         ]
         self._phy_widgets: List[QSpinBox] = []
-        for row_i, (lbl, attr, dflt, lo, hi, inc) in enumerate(phy_params):
+        for row_i, (lbl, attr, dflt, lo, hi, inc, tip) in enumerate(phy_params):
             r, c = divmod(row_i, 2)
             cell = QWidget()
             cl = QVBoxLayout(cell)
             cl.setContentsMargins(0, 0, 0, 0)
             cl.setSpacing(1)
             l = QLabel(lbl); l.setObjectName("dimLabel")
-            sb = QSpinBox()
+            sb = _SafeSpinBox()
             sb.setRange(lo, hi)
             sb.setSingleStep(inc)
             sb.setValue(dflt)
+            sb.setToolTip(tip)
             sb.valueChanged.connect(self._schedule_save)
             setattr(self, attr, sb)
             self._phy_widgets.append(sb)
@@ -1071,9 +1171,11 @@ class App(QMainWindow):
         fr.setSpacing(4)
         self._edit_rbe_path = QLineEdit()
         self._edit_rbe_path.setFont(QFont("Consolas", 8))
+        self._edit_rbe_path.setToolTip("Path to a Diabotical .rbe map file to convert\ninto Quake 3 .map format.")
         self._edit_rbe_path.textChanged.connect(self._schedule_save)
         btn_rbe = QPushButton("…")
         btn_rbe.setFixedWidth(32)
+        btn_rbe.setToolTip("Browse for an .rbe file…")
         btn_rbe.clicked.connect(self._browse_rbe)
         fr.addWidget(self._edit_rbe_path)
         fr.addWidget(btn_rbe)
@@ -1088,6 +1190,7 @@ class App(QMainWindow):
         lbl_rn.setObjectName("dimLabel")
         self._edit_map_name_rbe = QLineEdit("imported")
         self._edit_map_name_rbe.setPlaceholderText("imported")
+        self._edit_map_name_rbe.setToolTip("File name for the converted .map file.")
         suf_r = QLabel(".map")
         suf_r.setObjectName("dimLabel")
         rnr.addWidget(lbl_rn)
@@ -1104,9 +1207,12 @@ class App(QMainWindow):
         # Grid step: X +=1 → +40 DBT, Y +=1 → +20 DBT, Z +=1 → +40 DBT.
         # sx, sy scale 1 X/Z grid step; sz scales 1 Y grid step (height).
         # Defaults: 48, 48, 22 → each block = 48×22×48 Quake units.
-        self._spin_rbe_sx = QSpinBox(); self._spin_rbe_sx.setRange(1, 512); self._spin_rbe_sx.setValue(48)
-        self._spin_rbe_sy = QSpinBox(); self._spin_rbe_sy.setRange(1, 512); self._spin_rbe_sy.setValue(48)
-        self._spin_rbe_sz = QSpinBox(); self._spin_rbe_sz.setRange(1, 512); self._spin_rbe_sz.setValue(22)
+        self._spin_rbe_sx = _SafeSpinBox(); self._spin_rbe_sx.setRange(1, 512); self._spin_rbe_sx.setValue(48)
+        self._spin_rbe_sx.setToolTip("Quake units per 1 Diabotical X grid step.\nDefault 48 maps one 40-unit DBT block to 48 Q3 units.")
+        self._spin_rbe_sy = _SafeSpinBox(); self._spin_rbe_sy.setRange(1, 512); self._spin_rbe_sy.setValue(48)
+        self._spin_rbe_sy.setToolTip("Quake units per 1 Diabotical Z grid step.\nDefault 48 maps one 40-unit DBT block to 48 Q3 units.")
+        self._spin_rbe_sz = _SafeSpinBox(); self._spin_rbe_sz.setRange(1, 512); self._spin_rbe_sz.setValue(22)
+        self._spin_rbe_sz.setToolTip("Quake units per 1 Diabotical Y (height) grid step.\nDefault 22 maps one 20-unit DBT block to 22 Q3 units.")
         for lbl_txt, sb in [("X:", self._spin_rbe_sx), ("Y:", self._spin_rbe_sy),
                              ("Z (height):", self._spin_rbe_sz)]:
             sr.addWidget(QLabel(lbl_txt))
@@ -1121,6 +1227,7 @@ class App(QMainWindow):
         lay.addWidget(_sec_widget("Actions"))
         btn_import = QPushButton("Import")
         btn_import.setObjectName("btnGenerate")
+        btn_import.setToolTip("Convert the .rbe file to a Quake 3 .map file\nusing the scale settings above.")
         btn_import.clicked.connect(self._on_import_rbe)
         lay.addWidget(btn_import)
         lay.addStretch()
@@ -1319,7 +1426,7 @@ class App(QMainWindow):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(4)
 
-        def path_row(title, attr, browse_fn):
+        def path_row(title, attr, browse_fn, tip=""):
             lay.addWidget(_sec_widget(title))
             row = QWidget()
             rh = QHBoxLayout(row)
@@ -1327,28 +1434,37 @@ class App(QMainWindow):
             rh.setSpacing(4)
             edit = QLineEdit()
             edit.setFont(QFont("Consolas", 8))
+            if tip:
+                edit.setToolTip(tip)
             edit.textChanged.connect(self._schedule_save)
             setattr(self, attr, edit)
             btn = QPushButton("…")
             btn.setFixedWidth(32)
+            btn.setToolTip("Browse…")
             btn.clicked.connect(browse_fn)
             rh.addWidget(edit)
             rh.addWidget(btn)
             lay.addWidget(row)
 
-        path_row("Output folder",                "_edit_out_folder",  self._browse_out_folder)
-        path_row("Texture folder (for preview)", "_edit_tex_folder", self._browse_tex_folder)
-        path_row("Game executable",            "_edit_game_exe",    self._browse_game_exe)
+        path_row("Output folder", "_edit_out_folder", self._browse_out_folder,
+                 "Folder where .map files are saved.\nAlso used as the working directory for map output.")
+        path_row("Texture folder (for preview)", "_edit_tex_folder", self._browse_tex_folder,
+                 "Folder with texture images (jpg/png/bmp).\nUsed for thumbnail previews in the Textures tab. Not required for generation.")
+        path_row("Game executable", "_edit_game_exe", self._browse_game_exe,
+                 "Path to Turnt.exe (or another game). When set, Save also writes\na texture mapping JSON into the game's map_wip folder.")
 
         lay.addWidget(_sec_widget("Preview"))
         self._chk_prev_labels = QCheckBox("Show room numbers")
         self._chk_prev_labels.setChecked(True)
+        self._chk_prev_labels.setToolTip("Display room index numbers on the 2D preview.")
         self._chk_prev_labels.stateChanged.connect(self._schedule_save)
         self._chk_prev_hmap = QCheckBox("Show heightmap bar")
         self._chk_prev_hmap.setChecked(True)
+        self._chk_prev_hmap.setToolTip("Show a color-coded bar indicating room floor heights\nin the 2D preview.")
         self._chk_prev_hmap.stateChanged.connect(self._schedule_save)
         self._chk_prev_ramps = QCheckBox("Show ramps in 3D preview")
         self._chk_prev_ramps.setChecked(True)
+        self._chk_prev_ramps.setToolTip("Render ramp wedges in the 3D preview tab.\nDisable if the 3D view feels cluttered.")
         self._chk_prev_ramps.stateChanged.connect(self._schedule_save)
         lay.addWidget(self._chk_prev_labels)
         lay.addWidget(self._chk_prev_hmap)
@@ -1357,6 +1473,7 @@ class App(QMainWindow):
         lay.addWidget(_sec_widget("Updates"))
         self._chk_autoupdate = QCheckBox("Auto-update on startup")
         self._chk_autoupdate.setChecked(True)
+        self._chk_autoupdate.setToolTip("Automatically check for and install updates\nwhen the application starts.")
         self._chk_autoupdate.stateChanged.connect(self._schedule_save)
         lay.addWidget(self._chk_autoupdate)
 
@@ -1679,13 +1796,14 @@ class App(QMainWindow):
                     f"u: {cfg['u_base']:.0f}→{u_end:.0f} UPS | "
                     f"layout: {cfg['layout_style']} | seed {cfg['seed']}…", "info")
                 t0 = time.perf_counter()
-                ms, rooms, bridges, gen_warnings = generate_map(cfg)
+                ms, rooms, bridges, gen_warnings, share_hash = generate_map(cfg)
                 dt = time.perf_counter() - t0
 
                 self._map_str = ms
                 self._rooms   = rooms
                 self._bridges = bridges
                 self._is_rbe_import = False
+                self._last_share_hash = share_hash
 
                 nb = ms.count("// brush")
                 kb = len(ms.encode()) / 1024
@@ -1702,6 +1820,7 @@ class App(QMainWindow):
                     f"{len(bridges)} bridges, {nb} brushes, {kb:.1f} KB", "info")
                 self._log(
                     f"  Checkpoints: {n_cp}  |  Est. run time: ~{t_str}", "plain")
+                self._log(f"  Share: {share_hash}", "plain")
                 for w in gen_warnings:
                     self._log(w, "warn")
 
@@ -1772,6 +1891,10 @@ class App(QMainWindow):
                 f.write(self._map_str)
             self._last_map_path = path
             self._log(f"{'Saved' if manual else 'Auto-saved'}: {path.replace(chr(92), '/')}", "info")
+            # Also write the texture mapping JSON next to the game exe
+            exe = self._edit_game_exe.text().strip()
+            if exe and os.path.isfile(exe):
+                self._write_texture_mapping(exe, path)
         except Exception as e:
             self._log(f"Save error: {e}", "error")
 
@@ -1809,7 +1932,6 @@ class App(QMainWindow):
             self._log("Save a map first (or generate + auto-save).", "warn")
             return
         try:
-            self._write_texture_mapping(exe, path)
             cmd = [exe, "--", f"--import={path}"]
             subprocess.Popen(cmd)
             self._log(f"Launched: {' '.join(cmd)}", "info")
@@ -1817,18 +1939,118 @@ class App(QMainWindow):
             self._log(f"Launch failed: {ex}", "error")
 
     def _write_texture_mapping(self, exe_path: str, map_path: str):
-        """Write <game_dir>/map_wip/<map_name>.json with the current texture
-        index mapping, mirroring what turnt_texture_mapper.bat generates."""
-        import json as _json
+        """Write <game_dir>/map_wip/<map_name>.json in Godot resource format,
+        replacing turnt_texture_mapper.bat."""
         game_dir = os.path.dirname(os.path.abspath(exe_path))
         map_name = os.path.splitext(os.path.basename(map_path))[0]
         wip_dir  = os.path.join(game_dir, "map_wip")
         os.makedirs(wip_dir, exist_ok=True)
         out_path = os.path.join(wip_dir, f"{map_name}.json")
-        payload  = {"inverse_scale": 24, "textures": dict(ALL_TEXTURES)}
+        # Build Godot Dictionary[String, int] format
+        tex_lines = []
+        for name, idx in ALL_TEXTURES.items():
+            tex_lines.append(f'"{name}": {idx}')
+        body = ",\n".join(tex_lines)
+        content = (
+            '{\n'
+            '"inverse_scale": 24,\n'
+            '"textures": Dictionary[String, int]({\n'
+            f'{body}\n'
+            '})\n'
+            '}'
+        )
         with open(out_path, "w", encoding="utf-8") as f:
-            _json.dump(payload, f, indent=2)
+            f.write(content)
         self._log(f"Texture map → {out_path}", "info")
+
+    # ── Share hash ─────────────────────────────────────────────────────────
+
+    def _on_copy_hash(self):
+        if not self._last_share_hash:
+            self._log("No hash — generate a map first.", "warn")
+            return
+        QApplication.clipboard().setText(self._last_share_hash)
+        self._log(f"Hash exported: {self._last_share_hash}", "info")
+
+    def _on_import_hash(self):
+        text = QApplication.clipboard().text().strip()
+        if not text:
+            self._log("Clipboard is empty.", "warn")
+            return
+        if not text.startswith("tom1_"):
+            self._log("Clipboard does not contain a valid tom1_… hash.", "warn")
+            return
+        self._apply_hash(text)
+
+    def eventFilter(self, obj, event):
+        """Intercept Ctrl+V globally: if clipboard contains a tom1_… hash,
+        decode it and apply config settings.  Otherwise let the event
+        propagate so normal paste works in text fields."""
+        from PyQt6.QtCore import QEvent
+        if event.type() == QEvent.Type.KeyPress:
+            if (event.key() == Qt.Key.Key_V
+                    and event.modifiers() == Qt.KeyboardModifier.ControlModifier):
+                text = QApplication.clipboard().text().strip()
+                if text.startswith("tom1_"):
+                    self._apply_hash(text)
+                    return True          # consume event
+        return super().eventFilter(obj, event)
+
+    def _apply_hash(self, hash_str: str):
+        """Decode a tom1_… hash and apply all values to UI widgets."""
+        from .share import decode_hash
+        try:
+            cfg = decode_hash(hash_str)
+        except ValueError as e:
+            self._log(f"Invalid config hash: {e}", "error")
+            return
+
+        if "n_rooms" in cfg:
+            self._slider_rooms.setValue(cfg["n_rooms"])
+        if "min_w" in cfg:
+            self._sz["Min W"].setValue(cfg["min_w"])
+        if "max_w" in cfg:
+            self._sz["Max W"].setValue(cfg["max_w"])
+        if "min_d" in cfg:
+            self._sz["Min D"].setValue(cfg["min_d"])
+        if "max_d" in cfg:
+            self._sz["Max D"].setValue(cfg["max_d"])
+        if "min_h" in cfg:
+            self._sz["Min H"].setValue(cfg["min_h"])
+        if "max_h" in cfg:
+            self._sz["Max H"].setValue(cfg["max_h"])
+        if "use_physics" in cfg:
+            self._chk_physics.setChecked(cfg["use_physics"])
+        if "u_base" in cfg:
+            self._spin_u_base.setValue(int(cfg["u_base"]))
+        if "u_gain" in cfg:
+            self._spin_u_gain.setValue(int(cfg["u_gain"]))
+        if "t_air" in cfg:
+            self._spin_t_air.setValue(int(round(cfg["t_air"] * 100)))
+        if "strafe_f" in cfg:
+            self._spin_strafe_f.setValue(int(round(cfg["strafe_f"] * 100)))
+        if "rooms_per_turn" in cfg:
+            self._spin_rpt.setValue(cfg["rooms_per_turn"])
+        if "layout_style" in cfg:
+            self._current_layout = cfg["layout_style"]
+            for name, btn in self._layout_btns.items():
+                btn.setChecked(name == cfg["layout_style"])
+        if "seed" in cfg:
+            # Disable auto-rand so the pasted seed sticks
+            if self._btn_auto.isChecked():
+                self._btn_auto.setChecked(False)
+                self._toggle_autorand()
+            self._spin_seed.setValue(cfg["seed"])
+        if "height_var" in cfg:
+            self._chk_height.setChecked(cfg["height_var"])
+        if "checkpoints" in cfg:
+            self._chk_checks.setChecked(cfg["checkpoints"])
+        if "corridor_width_frac" in cfg:
+            self._slider_corr.setValue(int(cfg["corridor_width_frac"] * 100))
+
+        applied = [k for k in cfg]
+        self._log(f"Config applied from hash: {hash_str}", "info")
+        self._log(f"  Set: {', '.join(applied)}", "plain")
 
     # ── Browse helpers ────────────────────────────────────────────────────
     def _browse_out_folder(self):
