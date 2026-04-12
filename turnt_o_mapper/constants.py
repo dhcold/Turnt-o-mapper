@@ -55,6 +55,8 @@ CEIL_TEX  = ["turnt/turnt_sky", "turnt/turnt_white", "turnt/turnt_tech"]
 HIDDEN_TEX  = "common/caulk"
 NODRAW_TEX  = "common/nodrawnonsolid"
 TRIGGER_TEX = "common/trigger"
+RAMP_TEX    = "turnt/turnt_mint_2t"      # bright ramp surface
+OUTLINE_W   = 32                          # outline border width in Quake units
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  MAP GEOMETRY PARAMETERS
@@ -66,7 +68,7 @@ DOOR_H = 128  # default door height
 # ══════════════════════════════════════════════════════════════════════════════
 #  RAMP PHYSICS CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════
-SLOPE_RATIO    = 4.0   # horizontal / vertical ~= 14deg -- ideal shallow slope
+SLOPE_RATIO    = 3.73  # horizontal / vertical ~= 15deg -- shallowest target
 MAX_RAMP_ANGLE = 30    # degrees -- steepest allowed ramp
 # Minimum slope ratio that keeps angle <= MAX_RAMP_ANGLE: 1/tan(30deg) ~= 1.732
 MIN_SLOPE_RATIO = 1.0 / math.tan(math.radians(MAX_RAMP_ANGLE))

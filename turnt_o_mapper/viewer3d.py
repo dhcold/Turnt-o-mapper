@@ -185,7 +185,9 @@ class Viewer3DWidget(QWidget):
             painter.setPen(pen_corr)
 
             if dz >= 32:
-                # Ramp: sloped wedge — low end keeps its z, high end keeps its z.
+                # Ramp: sloped floor wedge + flat ceiling at the high end.
+                # The actual .map has a horizontal ceiling slab at max(z_lo,z_hi)+door_ht,
+                # so all four top corners share that same Z — giving a trapezoid side view.
                 if br.axis == 'x':
                     if br.ax <= br.bx:
                         x_lo, z_lo = br.ax, br.az
@@ -193,12 +195,13 @@ class Viewer3DWidget(QWidget):
                     else:
                         x_lo, z_lo = br.bx, br.bz
                         x_hi, z_hi = br.ax, br.az
-                    cy = (br.ay + br.by) // 2
+                    cy    = (br.ay + br.by) // 2
+                    z_top = max(z_lo, z_hi) + ht
                     corners = [
-                        (x_lo, cy - hw, z_lo),      (x_lo, cy + hw, z_lo),
-                        (x_hi, cy + hw, z_hi),      (x_hi, cy - hw, z_hi),
-                        (x_lo, cy - hw, z_lo + ht), (x_lo, cy + hw, z_lo + ht),
-                        (x_hi, cy + hw, z_hi + ht), (x_hi, cy - hw, z_hi + ht),
+                        (x_lo, cy - hw, z_lo),  (x_lo, cy + hw, z_lo),
+                        (x_hi, cy + hw, z_hi),  (x_hi, cy - hw, z_hi),
+                        (x_lo, cy - hw, z_top), (x_lo, cy + hw, z_top),
+                        (x_hi, cy + hw, z_top), (x_hi, cy - hw, z_top),
                     ]
                 else:  # 'y'
                     if br.ay <= br.by:
@@ -207,12 +210,13 @@ class Viewer3DWidget(QWidget):
                     else:
                         y_lo, z_lo = br.by, br.bz
                         y_hi, z_hi = br.ay, br.az
-                    cx = (br.ax + br.bx) // 2
+                    cx    = (br.ax + br.bx) // 2
+                    z_top = max(z_lo, z_hi) + ht
                     corners = [
-                        (cx - hw, y_lo, z_lo),      (cx + hw, y_lo, z_lo),
-                        (cx + hw, y_hi, z_hi),      (cx - hw, y_hi, z_hi),
-                        (cx - hw, y_lo, z_lo + ht), (cx + hw, y_lo, z_lo + ht),
-                        (cx + hw, y_hi, z_hi + ht), (cx - hw, y_hi, z_hi + ht),
+                        (cx - hw, y_lo, z_lo),  (cx + hw, y_lo, z_lo),
+                        (cx + hw, y_hi, z_hi),  (cx - hw, y_hi, z_hi),
+                        (cx - hw, y_lo, z_top), (cx + hw, y_lo, z_top),
+                        (cx + hw, y_hi, z_top), (cx - hw, y_hi, z_top),
                     ]
                 for (ax, ay), (bx, by) in self._wedge_edges(corners):
                     painter.drawLine(QPointF(ax, ay), QPointF(bx, by))

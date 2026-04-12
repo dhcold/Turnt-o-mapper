@@ -412,128 +412,177 @@ def rbe_entities_to_map(entities, sx, sy, sz, opaque_tex="turnt/turnt_concrete")
         else:
             model = props.get("model", "").lower()
 
-            prop_tex = None
+            # ── Detect shape ─────────────────────────────────────────
+            # Order matters: more-specific substrings first to avoid
+            # "invisible_box" matching "invisible_box_corner" etc.
             prop_shape = None
             if "invisible_cylinder" in model:
-                prop_tex = "common/caulk"
                 prop_shape = "cylinder"
             elif "invisible_block_diagonal" in model:
-                prop_tex = "common/caulk"
-                prop_shape = "diagonal"
+                prop_shape = "diagonal"       # 5-face wedge, anchor=corner, base 40u
             elif "invisible_opaque_box_corner" in model:
-                prop_tex = opaque_tex
-                prop_shape = "corner"
+                prop_shape = "box_corner"      # 6-face AABB, anchor=corner, base 100u
+            elif "invisible_box_corner" in model:
+                prop_shape = "box_corner"
             elif "invisible_opaque_box" in model:
-                prop_tex = opaque_tex
-                prop_shape = "box"
+                prop_shape = "box"             # 6-face AABB, anchor=center, base 100u
             elif "invisible_box" in model:
-                prop_tex = NODRAW_TEX
                 prop_shape = "box"
 
             if prop_shape is None:
                 continue
 
-            # xscale/zscale are half-extents in block units; *2 to get full extent
-            # yscale (height) already has *2 for the same reason
-            fx = max(MIN_HALF, abs(e.get("xscale", 1.0)) * sx * 2)
-            fy = max(MIN_HALF, abs(e.get("zscale", 1.0)) * sy * 2)
-            fz = max(MIN_HALF, abs(e.get("yscale", 1.0)) * 2 * sz)
+            # ── Texture from entity properties ───────────────────────
+            # clip: fullclip/playerclip/weapon/noclip
+            # slide: 0 = none, 1 = uncontrolled, 2 = controlled
+            no_show = props.get("no_show", "false").lower() == "true"
+            slide_v = props.get("slide", "0")
+            clip_v  = props.get("clip", "fullclip").lower()
 
+            if no_show:
+                prop_tex = "common/clip"
+            elif slide_v == "1" or slide_v == "2":
+                prop_tex = "common/slick"
+            elif clip_v == "noclip":
+                prop_tex = NODRAW_TEX
+            elif clip_v == "playerclip":
+                prop_tex = "common/clip"
+            elif clip_v == "weapon":
+                prop_tex = "common/weapclip"
+            else:
+                prop_tex = opaque_tex   # fullclip + visible → solid
+
+            # ── Size: base differs per shape ─────────────────────────
+            # All coords in DBT world-units (1 block = 40 X/Z, 20 Y).
+            # box / box_corner: 100u per axis at scale 1.
+            # diagonal:          40u per axis at scale 1.
+            ang = e.get("yrot", 0.0) % (2 * math.pi)
+
+            if prop_shape in ("box", "box_corner"):
+                BASE = 100.0
+                fx = max(MIN_HALF, abs(e.get("xscale", 1.0)) * BASE * EFX)
+                fy = max(MIN_HALF, abs(e.get("zscale", 1.0)) * BASE * EFY)
+                fz = max(MIN_HALF, abs(e.get("yscale", 1.0)) * BASE * EFZ)
+            elif prop_shape == "diagonal":
+                BASE = 40.0
+                fx = max(MIN_HALF, abs(e.get("xscale", 1.0)) * BASE * EFX)
+                fy = max(MIN_HALF, abs(e.get("zscale", 1.0)) * BASE * EFY)
+                fz = max(MIN_HALF, abs(e.get("yscale", 1.0)) * BASE * EFZ)
+
+            # ── 3D rotation helper ────────────────────────────────────
+            # Build rotation matrix from DBT Euler angles (xrot, yrot, zrot)
+            # in radians.  DBT uses intrinsic X→Y→Z convention.
+            # Axis mapping: DBT-X → Q-X, DBT-Z → Q-Y, DBT-Y → Q-Z.
+            # So DBT xrot → pitch (around Q-X), DBT yrot → yaw (around Q-Z),
+            # DBT zrot → roll (around Q-Y).
+            xrot = e.get("xrot", 0.0)
+            yrot = e.get("yrot", 0.0)
+            zrot = e.get("zrot", 0.0)
+
+            def _rot3d(lx, ly, lz):
+                """Rotate local offset (lx, ly, lz) by xrot/yrot/zrot."""
+                # Yaw (around Q-Z axis = DBT Y-up)
+                cy_, sy_ = math.cos(yrot), math.sin(yrot)
+                x1 =  cy_ * lx + sy_ * ly
+                y1 = -sy_ * lx + cy_ * ly
+                z1 =  lz
+                # Pitch (around Q-X axis = DBT X)
+                cx_, sx_ = math.cos(xrot), math.sin(xrot)
+                x2 =  x1
+                y2 =  cx_ * y1 - sx_ * z1
+                z2 =  sx_ * y1 + cx_ * z1
+                # Roll (around Q-Y axis = DBT Z)
+                cz_, sz_ = math.cos(zrot), math.sin(zrot)
+                x3 =  cz_ * x2 - sz_ * z2
+                y3 =  y2
+                z3 =  sz_ * x2 + cz_ * z2
+                return (x3, y3, z3)
+
+            def _rotated_box(ox, oy, oz, hx, hy, hz, tex, label):
+                """6-face brush: centre (ox,oy,oz), half-extents (hx,hy,hz),
+                rotated by the entity's xrot/yrot/zrot."""
+                # 8 corners: all ±h combinations in local space, then rotated
+                signs = [(-1,-1,-1),(1,-1,-1),(1,1,-1),(-1,1,-1),
+                         (-1,-1, 1),(1,-1, 1),(1,1, 1),(-1,1, 1)]
+                corners = []
+                for sx_, sy_, sz_ in signs:
+                    dx, dy, dz = _rot3d(sx_*hx, sy_*hy, sz_*hz)
+                    corners.append((ox+dx, oy+dy, oz+dz))
+                c = corners
+                # Faces — each triple must give an inward-pointing normal
+                fs = [
+                    face(c[0], c[1], c[3], tex),   # bottom (-Z local)
+                    face(c[6], c[5], c[7], tex),   # top (+Z local)
+                    face(c[0], c[4], c[1], tex),   # -Y local
+                    face(c[2], c[6], c[3], tex),   # +Y local
+                    face(c[1], c[5], c[2], tex),   # +X local
+                    face(c[3], c[7], c[0], tex),   # -X local
+                ]
+                return write_brush(fs, label)
+
+            # ── box: 6-face, anchor at center ────────────────────────
             if prop_shape == "box":
                 hx, hy, hz = fx / 2, fy / 2, fz / 2
-                fs = box_faces(qx - hx, qy - hy, qz - hz,
-                               qx + hx, qy + hy, qz + hz,
-                               prop_tex, prop_tex, prop_tex,
-                               prop_tex, prop_tex, prop_tex)
-                brushes.append(write_brush(fs, f"prop_box {nm}"))
+                brushes.append(_rotated_box(
+                    qx, qy, qz, hx, hy, hz,
+                    prop_tex, f"prop_box {nm}"))
 
+            # ── box_corner: 6-face, anchor at corner ─────────────────
+            elif prop_shape == "box_corner":
+                # Anchor is at one corner.  Compute centre by offsetting
+                # +half along each local axis from the anchor.
+                hx, hy, hz = fx / 2, fy / 2, fz / 2
+                dx, dy, dz = _rot3d(hx, hy, hz)
+                brushes.append(_rotated_box(
+                    qx + dx, qy + dy, qz + dz, hx, hy, hz,
+                    prop_tex, f"prop_box_corner {nm}"))
+
+            # ── diagonal: 5-face wedge, anchor at corner ─────────────
             elif prop_shape == "diagonal":
-                ang = math.radians(e.get("yrot", 0.0)) % (2 * math.pi)
+                z0, z1 = qz, qz + fz
                 if ang < math.pi / 4 or ang >= 7 * math.pi / 4:
                     x0, x1 = qx, qx + fx
-                    y0, y1 = qy - fy, qy
-                    z0, z1 = qz, qz + fz
-                    f_bot = face((x0, y0, z0), (x1, y0, z0), (x0, y1, z0), prop_tex)
-                    f_top = face((x1, y1, z1), (x1, y0, z1), (x0, y0, z1), prop_tex)
-                    f_w1  = face((x1, y0, z1), (x1, y0, z0), (x1, y1, z1), prop_tex)
-                    f_w2  = face((x0, y0, z0), (x0, y0, z1), (x1, y0, z0), prop_tex)
-                    f_dia = face((x1, y1, z1), (x0, y0, z1 + 1), (x0, y0, z1), prop_tex)
+                    y0, y1 = qy, qy + fy
+                    f_w1 = face((x0, y0, z0), (x0, y1, z0), (x0, y0, z1), prop_tex)
+                    f_w2 = face((x1, y1, z1), (x0, y1, z1), (x1, y1, z0), prop_tex)
+                    f_dia = face((x0, y0, z1), (x1, y1, z1 + 1), (x1, y1, z1), prop_tex)
                 elif ang < 3 * math.pi / 4:
                     x0, x1 = qx, qx + fx
-                    y0, y1 = qy, qy + fy
-                    z0, z1 = qz, qz + fz
-                    f_bot = face((x0, y0, z0), (x1, y0, z0), (x0, y1, z0), prop_tex)
-                    f_top = face((x1, y1, z1), (x1, y0, z1), (x0, y0, z1), prop_tex)
-                    f_w1  = face((x1, y1, z1), (x1, y1, z0), (x1, y0, z1), prop_tex)
-                    f_w2  = face((x1, y1, z1), (x0, y1, z1), (x1, y1, z0), prop_tex)
+                    y0, y1 = qy - fy, qy
+                    f_w1 = face((x1, y1, z1), (x1, y1, z0), (x1, y0, z1), prop_tex)
+                    f_w2 = face((x1, y1, z1), (x0, y1, z1), (x1, y1, z0), prop_tex)
                     f_dia = face((x0, y1, z1), (x1, y0, z1 + 1), (x1, y0, z1), prop_tex)
                 elif ang < 5 * math.pi / 4:
                     x0, x1 = qx - fx, qx
-                    y0, y1 = qy, qy + fy
-                    z0, z1 = qz, qz + fz
-                    f_bot = face((x0, y0, z0), (x1, y0, z0), (x0, y1, z0), prop_tex)
-                    f_top = face((x1, y1, z1), (x1, y0, z1), (x0, y0, z1), prop_tex)
-                    f_w1  = face((x0, y0, z0), (x0, y1, z0), (x0, y0, z1), prop_tex)
-                    f_w2  = face((x1, y1, z1), (x0, y1, z1), (x1, y1, z0), prop_tex)
-                    f_dia = face((x0, y0, z1), (x1, y1, z1 + 1), (x1, y1, z1), prop_tex)
+                    y0, y1 = qy - fy, qy
+                    f_w1 = face((x1, y1, z1), (x1, y1, z0), (x1, y0, z1), prop_tex)
+                    f_w2 = face((x0, y0, z0), (x0, y0, z1), (x1, y0, z0), prop_tex)
+                    f_dia = face((x1, y1, z1), (x0, y0, z1 + 1), (x0, y0, z1), prop_tex)
                 else:
                     x0, x1 = qx - fx, qx
-                    y0, y1 = qy - fy, qy
-                    z0, z1 = qz, qz + fz
-                    f_bot = face((x0, y0, z0), (x1, y0, z0), (x0, y1, z0), prop_tex)
-                    f_top = face((x1, y1, z1), (x1, y0, z1), (x0, y0, z1), prop_tex)
-                    f_w1  = face((x0, y0, z0), (x0, y1, z0), (x0, y0, z1), prop_tex)
-                    f_w2  = face((x0, y0, z0), (x0, y0, z1), (x1, y0, z0), prop_tex)
+                    y0, y1 = qy, qy + fy
+                    f_w1 = face((x0, y0, z0), (x0, y1, z0), (x0, y0, z1), prop_tex)
+                    f_w2 = face((x0, y0, z0), (x0, y0, z1), (x1, y0, z0), prop_tex)
                     f_dia = face((x0, y1, z1), (x1, y0, z1), (x1, y0, z1 + 1), prop_tex)
-
-                brushes.append(write_brush(
-                    [f_bot, f_top, f_w1, f_w2, f_dia],
-                    f"diag_prop {nm}"))
-
-            elif prop_shape == "corner":
-                ang = math.radians(e.get("yrot", 0.0)) % (2 * math.pi)
-                hx, hy, hz = fx / 2, fy / 2, fz / 2
-                x0, x1 = qx - hx, qx + hx
-                y0, y1 = qy - hy, qy + hy
-                z0, z1 = qz - hz, qz + hz
-
                 f_bot = face((x0, y0, z0), (x1, y0, z0), (x0, y1, z0), prop_tex)
                 f_top = face((x1, y1, z1), (x1, y0, z1), (x0, y0, z1), prop_tex)
-
-                if ang < math.pi / 4 or ang >= 7 * math.pi / 4:
-                    f_w1  = face((x1, y1, z1), (x1, y1, z0), (x1, y0, z1), prop_tex)
-                    f_w2  = face((x0, y0, z0), (x0, y0, z1), (x1, y0, z0), prop_tex)
-                    f_dia = face((x1, y1, z1), (x0, y0, z1 + 1), (x0, y0, z1), prop_tex)
-                elif ang < 3 * math.pi / 4:
-                    f_w1  = face((x1, y1, z1), (x1, y1, z0), (x1, y0, z1), prop_tex)
-                    f_w2  = face((x1, y1, z1), (x0, y1, z1), (x1, y1, z0), prop_tex)
-                    f_dia = face((x0, y1, z1), (x1, y0, z1 + 1), (x1, y0, z1), prop_tex)
-                elif ang < 5 * math.pi / 4:
-                    f_w1  = face((x0, y0, z0), (x0, y1, z0), (x0, y0, z1), prop_tex)
-                    f_w2  = face((x1, y1, z1), (x0, y1, z1), (x1, y1, z0), prop_tex)
-                    f_dia = face((x0, y0, z1), (x1, y1, z1 + 1), (x1, y1, z1), prop_tex)
-                else:
-                    f_w1  = face((x0, y0, z0), (x0, y1, z0), (x0, y0, z1), prop_tex)
-                    f_w2  = face((x0, y0, z0), (x0, y0, z1), (x1, y0, z0), prop_tex)
-                    f_dia = face((x0, y1, z1), (x1, y0, z1), (x1, y0, z1 + 1), prop_tex)
-
                 brushes.append(write_brush(
-                    [f_bot, f_top, f_w1, f_w2, f_dia],
-                    f"corner_prop {nm}"))
+                    [f_bot, f_top, f_w1, f_w2, f_dia], f"diag_prop {nm}"))
 
+            # ── cylinder ─────────────────────────────────────────────
             elif prop_shape == "cylinder":
-                # yrot is in degrees (same as diagonal/corner); convert to radians
-                ang = math.radians(e.get("yrot", 0.0))
+                cyl_ang = e.get("yrot", 0.0)
                 outer_r = max(MIN_HALF, abs(e.get("xscale", 1.0)) * sx * 4)
                 wall_t  = sx / 2.0
                 inner_r = outer_r - wall_t
-                z_bot = qz - fz / 2
-                z_top = qz + fz / 2
+                fz_cyl  = max(MIN_HALF, abs(e.get("yscale", 1.0)) * 100 * EFZ)
+                z_bot   = qz - fz_cyl / 2
+                z_top   = qz + fz_cyl / 2
                 arc_step = float(sx)
                 cyl_strs = cylinder_brushes(
                     qx, qy, z_bot, z_top,
                     inner_r, outer_r,
-                    ang, ang + math.pi / 2,
+                    cyl_ang, cyl_ang + math.pi / 2,
                     arc_step, prop_tex)
                 brushes.extend(cyl_strs)
 
@@ -608,7 +657,7 @@ def run_import(path, sx, sy, sz, log_fn=None):
 
     # 0. Show parameters
     _log(f"Scale: 1 block → X={sx}qu  Y={sy}qu  Z(height)={sz}qu  |  "
-         f"prop angles: degrees", "info")
+         f"prop angles: radians", "info")
 
     # 1. Parse
     _log(f"Parsing {path} \u2026", "info")
@@ -687,10 +736,10 @@ def run_import(path, sx, sy, sz, log_fn=None):
          f"{len(corner_brush_strs):,} brushes in {dt:.2f}s", "info")
 
     # 5. Entity conversion
-    opaque_prop_tex = (_TURNT_POOL[(len(mat_groups) + 1) % len(_TURNT_POOL)]
-                       if _TURNT_POOL else "turnt/turnt_concrete")
+    # Visible props get the same texture as solid blocks (first in the pool).
+    solid_tex = next(iter(mat_tex.values()), "turnt/turnt_concrete")
     prop_brushes, entity_lines = rbe_entities_to_map(
-        entities, sx, sy, sz, opaque_tex=opaque_prop_tex)
+        entities, sx, sy, sz, opaque_tex=solid_tex)
     n_spawns    = sum(1 for e in entities if e["name"] == "spawn")
     n_start_t   = sum(1 for e in entities if e["name"].startswith("trigger_start"))
     n_end_t     = sum(1 for e in entities if e["name"].startswith("trigger_end"))

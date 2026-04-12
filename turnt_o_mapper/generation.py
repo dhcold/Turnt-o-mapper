@@ -17,12 +17,12 @@ import math
 import random
 from typing import Dict, List
 
-from .constants import DOOR_H, WALL_T, SLOPE_RATIO, MAX_RAMP_ANGLE
+from .constants import DOOR_H, WALL_T, SLOPE_RATIO, MAX_RAMP_ANGLE, MIN_SLOPE_RATIO
 from .models import Room, Bridge
 from .layout import place_rooms, build_bridges, _snap
 from .brushes import (
     room_floor, room_ceiling, room_walls, corridor_brushes,
-    _adaptive_ramp_len,
+    _adaptive_ramp_len, compute_bridge_footprint,
 )
 from .entities import (
     align_room_ceilings, _add_passthrough_doors,
@@ -136,6 +136,25 @@ def generate_map(cfg: dict):
 
     _add_passthrough_doors(rooms, bridges, room_doors)
 
+    # ── Compute bridge corridor/ramp footprints for clipping ───────────
+    # Each entry is (x1, y1, x2, y2, z_floor, room_a_idx, room_b_idx)
+    # so the clip logic can skip the bridge's own connected rooms.
+    bridge_footprints = []
+    for br in bridges:
+        ra = rooms[br.room_a]; rb = rooms[br.room_b]
+        if br.axis == 'x':
+            ra_far = ra.x1 if br.ax >= ra.x2 - 1 else ra.x2
+            rb_far = rb.x2 if br.bx <= rb.x1 + 1 else rb.x1
+        else:
+            ra_far = ra.y1 if br.ay >= ra.y2 - 1 else ra.y2
+            rb_far = rb.y2 if br.by <= rb.y1 + 1 else rb.y1
+        fp = compute_bridge_footprint(
+            br.ax, br.ay, br.az, br.bx, br.by, br.bz,
+            br.axis, door_hw=br.door_hw,
+            ra_far=ra_far, rb_far=rb_far)
+        if fp is not None:
+            bridge_footprints.append((*fp, br.room_a, br.room_b))
+
     lines = [
         "// Game: Quake 3",
         "// Format: Quake3 (Valve)",
@@ -147,17 +166,35 @@ def generate_map(cfg: dict):
 
     bi = 0
 
+    # Build per-room "nearby" set: bridge-connected rooms + rooms within ±2
+    # in route order.  These are clipped normally (floor/ceil/wall).
+    room_nearby: Dict[int, set] = {i: set() for i in range(len(rooms))}
+    for br in bridges:
+        room_nearby[br.room_a].add(br.room_b)
+        room_nearby[br.room_b].add(br.room_a)
+    for i in range(len(rooms)):
+        for off in (-2, -1, 1, 2):
+            j = i + off
+            if 0 <= j < len(rooms):
+                room_nearby[i].add(j)
+
     # ── Pass 1: floors ──────────────────────────────────────────────────
     for room in rooms:
-        fc = _compute_footprint_clips(room, rooms, room.z1)
+        adj = room_nearby.get(room.idx, set())
+        fc = _compute_footprint_clips(room, rooms, room.z1,
+                                      bridge_clips=bridge_footprints,
+                                      adjacent_indices=adj)
         parts, bi = room_floor(room.x1, room.y1, room.z1,
                                room.x2, room.y2, room.z2,
-                               room.floor_t, f"r{room.idx}", bi, clips=fc)
+                               room.floor_t, f"r{room.idx}", bi, clips=fc,
+                               accent_t=room.accent_t)
         lines.extend(parts)
 
     # ── Pass 2: walls ───────────────────────────────────────────────────
     for room in rooms:
-        sc = _compute_wall_clips(room, rooms, room_doors.get(room.idx, []))
+        adj = room_nearby.get(room.idx, set())
+        sc = _compute_wall_clips(room, rooms, room_doors.get(room.idx, []),
+                                 adjacent_indices=adj)
         parts, bi = room_walls(room.x1, room.y1, room.z1,
                                room.x2, room.y2, room.z2,
                                room.wall_t, f"r{room.idx}", bi,
@@ -167,11 +204,30 @@ def generate_map(cfg: dict):
 
     # ── Pass 3: ceilings ────────────────────────────────────────────────
     for room in rooms:
-        cc = _compute_footprint_clips(room, rooms, room.z2)
+        adj = room_nearby.get(room.idx, set())
+        cc = _compute_footprint_clips(room, rooms, room.z2,
+                                      bridge_clips=bridge_footprints,
+                                      adjacent_indices=adj)
         parts, bi = room_ceiling(room.x1, room.y1, room.z1,
                                  room.x2, room.y2, room.z2,
                                  room.ceil_t, f"r{room.idx}", bi, clips=cc)
         lines.extend(parts)
+
+    # ── Pre-pass: detect rooms with opposing ramps on the same axis ─────
+    # When two ramps extend into the same room from opposite sides, clamp
+    # each ramp to the room's midpoint so they don't overlap.
+    _ramp_sides: Dict[int, Dict[str, list]] = {}  # room_idx -> {axis: [bridge_indices]}
+    for bi_idx, br in enumerate(bridges):
+        if abs(br.bz - br.az) < 32:
+            continue
+        for rid in (br.room_a, br.room_b):
+            _ramp_sides.setdefault(rid, {}).setdefault(br.axis, []).append(bi_idx)
+    MIN_FLAT = 256
+    clamped_rooms: set = set()
+    for rid, axes in _ramp_sides.items():
+        for ax, br_list in axes.items():
+            if len(br_list) >= 2:
+                clamped_rooms.add((rid, ax))
 
     # ── Pass 4: corridors / ramps ───────────────────────────────────────
     for br in bridges:
@@ -179,9 +235,36 @@ def generate_map(cfg: dict):
         if br.axis == 'x':
             ra_far = ra.x1 if br.ax >= ra.x2 - 1 else ra.x2
             rb_far = rb.x2 if br.bx <= rb.x1 + 1 else rb.x1
+            if (br.room_a, 'x') in clamped_rooms:
+                ra_far = ra.cx()
+            if (br.room_b, 'x') in clamped_rooms:
+                rb_far = rb.cx()
+            # Ensure 256u flat before ramp starts inside each room
+            if abs(br.bz - br.az) >= 32:
+                if ra_far < br.ax:
+                    ra_far = max(ra_far, br.ax - MIN_FLAT)
+                else:
+                    ra_far = min(ra_far, br.ax + MIN_FLAT)
+                if rb_far > br.bx:
+                    rb_far = min(rb_far, br.bx + MIN_FLAT)
+                else:
+                    rb_far = max(rb_far, br.bx - MIN_FLAT)
         else:
             ra_far = ra.y1 if br.ay >= ra.y2 - 1 else ra.y2
             rb_far = rb.y2 if br.by <= rb.y1 + 1 else rb.y1
+            if (br.room_a, 'y') in clamped_rooms:
+                ra_far = ra.cy()
+            if (br.room_b, 'y') in clamped_rooms:
+                rb_far = rb.cy()
+            if abs(br.bz - br.az) >= 32:
+                if ra_far < br.ay:
+                    ra_far = max(ra_far, br.ay - MIN_FLAT)
+                else:
+                    ra_far = min(ra_far, br.ay + MIN_FLAT)
+                if rb_far > br.by:
+                    rb_far = min(rb_far, br.by + MIN_FLAT)
+                else:
+                    rb_far = max(rb_far, br.by - MIN_FLAT)
         parts, bi = corridor_brushes(
             br.ax, br.ay, br.az,
             br.bx, br.by, br.bz,
@@ -216,66 +299,61 @@ def generate_map(cfg: dict):
             warnings.append(msg)
 
     # ── Pass 6: Ramp validation ─────────────────────────────────────────
+    # Check every ramp bridge for: angle <= 30 deg, endpoint inside room,
+    # and sufficient flat clearance (MIN_FLAT) before the ramp starts.
+    MIN_FLAT = 256
     for br in bridges:
         dz = abs(br.bz - br.az)
         if dz < 32:
             continue
         ra = rooms[br.room_a]; rb = rooms[br.room_b]
         H = WALL_T
+        tag = f"r{br.room_a}->r{br.room_b}"
+
+        # Compute ramp length and angle
         if br.axis == 'x':
             ra_far = ra.x1 if br.ax >= ra.x2 - 1 else ra.x2
             rb_far = rb.x2 if br.bx <= rb.x1 + 1 else rb.x1
-            lo_z = br.az if br.ax <= br.bx else br.bz
-            hi_z = br.bz if br.ax <= br.bx else br.az
-            lo_far = ra_far if br.ax <= br.bx else rb_far
-            hi_far = rb_far if br.ax <= br.bx else ra_far
-            hi_x = max(br.ax, br.bx)
-            lo_x = min(br.ax, br.bx)
-            if lo_z <= hi_z:
-                x_hi = hi_x - H
-                x_lo_limit = (lo_far + H) if lo_far is not None else (x_hi - int(dz * SLOPE_RATIO))
-                max_available = x_hi - x_lo_limit
-            else:
-                x_lo = lo_x + H
-                x_hi_limit = (hi_far - H) if hi_far is not None else (x_lo + int(dz * SLOPE_RATIO))
-                max_available = x_hi_limit - x_lo
-            ramp_len = _adaptive_ramp_len(dz, max_available)
+            gap = abs(br.bx - br.ax)
+            # Flat clearance: distance from bridge endpoint to room far wall
+            flat_a = abs(br.ax - ra_far)
+            flat_b = abs(br.bx - rb_far)
         else:
             ra_far = ra.y1 if br.ay >= ra.y2 - 1 else ra.y2
             rb_far = rb.y2 if br.by <= rb.y1 + 1 else rb.y1
-            lo_zy = br.az if br.ay <= br.by else br.bz
-            hi_zy = br.bz if br.ay <= br.by else br.az
-            lo_fy = ra_far if br.ay <= br.by else rb_far
-            hi_fy = rb_far if br.ay <= br.by else ra_far
-            hi_y = max(br.ay, br.by)
-            lo_y = min(br.ay, br.by)
-            if lo_zy <= hi_zy:
-                y_hi = hi_y - H
-                y_lo_limit = (lo_fy + H) if lo_fy is not None else (y_hi - int(dz * SLOPE_RATIO))
-                max_available = y_hi - y_lo_limit
-            else:
-                y_lo = lo_y + H
-                y_hi_limit = (hi_fy - H) if hi_fy is not None else (y_lo + int(dz * SLOPE_RATIO))
-                max_available = y_hi_limit - y_lo
-            ramp_len = _adaptive_ramp_len(dz, max_available)
+            gap = abs(br.by - br.ay)
+            flat_a = abs(br.ay - ra_far)
+            flat_b = abs(br.by - rb_far)
+
+        ramp_len = _adaptive_ramp_len(dz, gap + max(flat_a, flat_b))
         if ramp_len > 0:
             angle = math.degrees(math.atan2(dz, ramp_len))
             if angle > MAX_RAMP_ANGLE:
-                msg = (f"\u26a0 Ramp r{br.room_a}\u2192r{br.room_b}: "
-                       f"angle {angle:.1f}\u00b0 exceeds {MAX_RAMP_ANGLE}\u00b0 "
-                       f"(dz={dz}, len={ramp_len}, avail={max_available})")
-                lines.append(f"// {msg}")
+                msg = (f"Ramp {tag}: angle {angle:.1f} deg > {MAX_RAMP_ANGLE} deg "
+                       f"(dz={dz}, len={ramp_len})")
                 warnings.append(msg)
-        if br.axis == 'x' and not (ra.x1 - 1 <= br.ax <= ra.x2 + 1):
-            msg = (f"\u26a0 Ramp r{br.room_a}\u2192r{br.room_b}: "
-                   f"ax={br.ax} outside room_a X [{ra.x1},{ra.x2}]")
-            lines.append(f"// {msg}")
-            warnings.append(msg)
-        elif br.axis == 'y' and not (ra.y1 - 1 <= br.ay <= ra.y2 + 1):
-            msg = (f"\u26a0 Ramp r{br.room_a}\u2192r{br.room_b}: "
-                   f"ay={br.ay} outside room_a Y [{ra.y1},{ra.y2}]")
-            lines.append(f"// {msg}")
-            warnings.append(msg)
+
+        # Endpoint inside room check
+        if br.axis == 'x':
+            if not (ra.x1 - 1 <= br.ax <= ra.x2 + 1):
+                warnings.append(f"Ramp {tag}: endpoint outside room_a X")
+            if not (rb.x1 - 1 <= br.bx <= rb.x2 + 1):
+                warnings.append(f"Ramp {tag}: endpoint outside room_b X")
+        else:
+            if not (ra.y1 - 1 <= br.ay <= ra.y2 + 1):
+                warnings.append(f"Ramp {tag}: endpoint outside room_a Y")
+            if not (rb.y1 - 1 <= br.by <= rb.y2 + 1):
+                warnings.append(f"Ramp {tag}: endpoint outside room_b Y")
+
+        # Flat clearance check (should have MIN_FLAT before ramp)
+        low_room = ra if br.az <= br.bz else rb
+        low_flat = flat_a if br.az <= br.bz else flat_b
+        if low_flat < MIN_FLAT and low_flat < gap:
+            warnings.append(
+                f"Ramp {tag}: only {low_flat}u flat before ramp (want {MIN_FLAT}u)")
+
+    for w in warnings:
+        lines.append(f"// {w}")
 
     # ── Entities ────────────────────────────────────────────────────────
     ei    = 1
@@ -335,18 +413,39 @@ def generate_map(cfg: dict):
     ei += 1
 
     if cfg.get("checkpoints", True):
+        # Build incoming-bridge map so checkpoints are placed at the
+        # bridge entry point, not along an arbitrary wall.
+        _incoming: Dict[int, Bridge] = {}
+        for br in bridges:
+            if abs(br.room_a - br.room_b) == 1 and br.room_b not in _incoming:
+                _incoming[br.room_b] = br
+
         cp_num = 0
         for cp_n, room in enumerate(rooms[1:-1], start=1):
             if cp_n % 10 != 0:
                 continue
             cp_num += 1
             tname = f"target_checkpoint_{cp_n}"
-            if room.travel_axis == 'x':
-                tx1 = room.x1;       tx2 = room.x1 + SL
-                ty1 = room.y1;       ty2 = room.y2
+            ibr = _incoming.get(room.idx)
+            if ibr and ibr.axis == 'x':
+                # Entry from X side — thin trigger across the door opening
+                tx = ibr.bx if ibr.room_b == room.idx else ibr.ax
+                tx1 = tx - SL // 2; tx2 = tx + SL // 2
+                ty1 = (ibr.ay + ibr.by) // 2 - ibr.door_hw
+                ty2 = (ibr.ay + ibr.by) // 2 + ibr.door_hw
+            elif ibr and ibr.axis == 'y':
+                ty = ibr.by if ibr.room_b == room.idx else ibr.ay
+                ty1 = ty - SL // 2; ty2 = ty + SL // 2
+                tx1 = (ibr.ax + ibr.bx) // 2 - ibr.door_hw
+                tx2 = (ibr.ax + ibr.bx) // 2 + ibr.door_hw
             else:
-                tx1 = room.x1;       tx2 = room.x2
-                ty1 = room.y1;       ty2 = room.y1 + SL
+                # Fallback: use room entry edge
+                if room.travel_axis == 'x':
+                    tx1 = room.x1; tx2 = room.x1 + SL
+                    ty1 = room.y1; ty2 = room.y2
+                else:
+                    tx1 = room.x1; tx2 = room.x2
+                    ty1 = room.y1; ty2 = room.y1 + SL
             lines.append(f"\n// entity {ei}")
             lines.append(ent_brush_box("trigger_multiple",
                 tx1, ty1, room.z1, tx2, ty2, room.z2,
