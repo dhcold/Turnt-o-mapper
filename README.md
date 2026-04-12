@@ -72,7 +72,9 @@ pyinstaller --onefile --windowed --name turnt-o-mapper main.py
 ## Usage
 
 ### Generate tab
+
 <img width="1887" height="1129" alt="image" src="https://github.com/user-attachments/assets/abc8e11b-a877-4fe6-898f-c72eef3f2347" />
+
 - Set **Number of rooms** (2–100) and choose a **Layout style**
 - Adjust **Room size** (min/max width, depth, height)
 - Set **Corridor width** (25–100%)
@@ -80,13 +82,18 @@ pyinstaller --onefile --windowed --name turnt-o-mapper main.py
 - Click **⚡ Generate** — preview updates instantly
    
 ### DBT Import tab
+
 <img width="1886" height="1179" alt="image" src="https://github.com/user-attachments/assets/cb473cb1-2b10-45b9-9ec1-d3b3005cea75" />
+
 - Select a Diabotical `.rbe` map file
 - Configure X/Y/Z scale (Quake units per DBT block)
 - Click **Import** to get a `.map`
 - **Save** map file
   
 ### Textures tab
+
+<img width="1887" height="1176" alt="image" src="https://github.com/user-attachments/assets/5372221e-d0da-403b-96c9-3a559c08fb73" />
+
 - Assign textures to **Floor**, **Wall**, and **Ceiling** categories using the F/W/C checkboxes
 - Set the **Texture folder** path in Settings to see live thumbnails
 - The generator picks one unified texture set per map from the enabled pool
