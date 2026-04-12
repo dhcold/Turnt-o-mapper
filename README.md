@@ -72,12 +72,20 @@ pyinstaller --onefile --windowed --name turnt-o-mapper main.py
 ## Usage
 
 ### Generate tab
-1. Set **Number of rooms** (2–100) and choose a **Layout style**
-2. Adjust **Room size** (min/max width, depth, height)
-3. Set **Corridor width** (25–100%)
-4. Optionally enable **Physics model** for acceleration-based level design
-5. Click **⚡ Generate** — preview updates instantly
-
+<img width="1887" height="1129" alt="image" src="https://github.com/user-attachments/assets/abc8e11b-a877-4fe6-898f-c72eef3f2347" />
+- Set **Number of rooms** (2–100) and choose a **Layout style**
+- Adjust **Room size** (min/max width, depth, height)
+- Set **Corridor width** (25–100%)
+- Optionally enable **Physics model** for acceleration-based level design
+- Click **⚡ Generate** — preview updates instantly
+   
+### DBT Import tab
+<img width="1886" height="1179" alt="image" src="https://github.com/user-attachments/assets/cb473cb1-2b10-45b9-9ec1-d3b3005cea75" />
+- Select a Diabotical `.rbe` map file
+- Configure X/Y/Z scale (Quake units per DBT block)
+- Click **Import** to get a `.map`
+- **Save** map file
+  
 ### Textures tab
 - Assign textures to **Floor**, **Wall**, and **Ceiling** categories using the F/W/C checkboxes
 - Set the **Texture folder** path in Settings to see live thumbnails
@@ -89,14 +97,9 @@ pyinstaller --onefile --windowed --name turnt-o-mapper main.py
 - **Texture folder** — path to your Turnt texture assets (for preview only)
 - **Game executable** — path to Turnt binary for the Launch button
 
-### DBT Import tab
-- Select a Diabotical `.rbe` map file
-- Configure X/Y/Z scale (Quake units per DBT block)
-- Click **Import** to get a `.map`
-- **Save** map file
-
 ### Save & launch
 - **Save .map** — writes the current map to the configured output path
+- **Open .map** — opens the current map with TB / Radiant / etc
 - **Open folder** — opens the output folder in your file manager
 - **Launch game** — runs Turnt with `--import=<path>` to preview in-engine
 
