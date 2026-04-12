@@ -12,10 +12,7 @@ Design a full map layout in seconds: choose room count, dimensions, corridor wid
 ## Features
 
 - **6 layout strategies** — Linear, Zigzag, Snake, Random, Spiral, Multilevel
-- **Smart ramp generation** — slopes capped at 30 deg, 256u flat run-up, min 1 room gap between ramps, adaptive distance from corners
 - **Unified art style** — one cohesive texture set per map with accent outline borders on floors and mint-colored ramp surfaces
-- **Corner room geometry** — corners sized to fit neighboring rooms with crouchslide-width cross sections; no "tails" in the wrong direction
-- **Z collision avoidance** — folding layouts (Random/Spiral/Multilevel) separate overlapping rooms by 60 % of room height for distinct floor levels
 - **Interactive 2D preview** — scroll to zoom, drag to pan, double-click to fit
 - **Interactive 3D wireframe** — drag to rotate, WASD to pan, scroll to zoom, Iso/Top/Front/Side presets
 - **Physics model** — acceleration-based speed simulation per room segment
@@ -86,7 +83,6 @@ pyinstaller --onefile --windowed --name turnt-o-mapper main.py
 - Set the **Texture folder** path in Settings to see live thumbnails
 - The generator picks one unified texture set per map from the enabled pool
 - Floor outlines use an accent texture (a different wall texture) for visual detail
-- Ramp surfaces use `turnt/turnt_mint_2t` for visibility
 
 ### Settings tab
 - **Output .map file** — where the generated file is saved
