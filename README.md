@@ -87,6 +87,7 @@ pyinstaller --onefile --windowed --name turnt-o-mapper main.py
 - **Save** map file
   
 ### Textures tab
+<img width="1887" height="1176" alt="image" src="https://github.com/user-attachments/assets/5372221e-d0da-403b-96c9-3a559c08fb73" />
 - Assign textures to **Floor**, **Wall**, and **Ceiling** categories using the F/W/C checkboxes
 - Set the **Texture folder** path in Settings to see live thumbnails
 - The generator picks one unified texture set per map from the enabled pool
