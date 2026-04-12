@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QSlider, QSpinBox, QDoubleSpinBox,
     QCheckBox, QLineEdit, QTabWidget, QTextEdit, QScrollArea,
     QFileDialog, QFrame, QSizePolicy, QButtonGroup, QStatusBar,
-    QPlainTextEdit,
+    QPlainTextEdit, QSplitter,
 )
 from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
 from PyQt6.QtGui import (
@@ -341,27 +341,30 @@ QScrollArea {{
 
 QScrollBar:vertical {{
     background: transparent;
-    width: 6px;
+    width: 10px;
     margin: 2px;
 }}
 QScrollBar::handle:vertical {{
-    background: {t['scrollbar_h']};
-    border-radius: 3px;
-    min-height: 24px;
+    background: #6a6a6a;
+    border-radius: 5px;
+    min-height: 28px;
 }}
 QScrollBar::handle:vertical:hover {{
-    background: {t['border']};
+    background: #8a8a8a;
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 
 QScrollBar:horizontal {{
     background: transparent;
-    height: 6px;
+    height: 10px;
 }}
 QScrollBar::handle:horizontal {{
-    background: {t['scrollbar_h']};
-    border-radius: 3px;
-    min-width: 24px;
+    background: #6a6a6a;
+    border-radius: 5px;
+    min-width: 28px;
+}}
+QScrollBar::handle:horizontal:hover {{
+    background: #8a8a8a;
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
@@ -458,6 +461,16 @@ QLabel#logHdr {{
     font-weight: 700;
     letter-spacing: 0.5px;
     background: transparent;
+}}
+
+QSplitter::handle:horizontal {{
+    background-color: {t['card_border']};
+    width: 2px;
+    margin: 4px 2px;
+    border-radius: 1px;
+}}
+QSplitter::handle:horizontal:hover {{
+    background-color: {t['accent']};
 }}
 """
 
@@ -615,7 +628,7 @@ class App(QMainWindow):
         super().__init__()
         self._dispatch_signal.connect(lambda fn: fn())
         self.setWindowTitle("Turnt-o-mapper")
-        self.setMinimumSize(900, 640)
+        self.setMinimumSize(800, 580)
         _icon_path = os.path.join(os.path.dirname(__file__), "icon.ico")
         if os.path.exists(_icon_path):
             self.setWindowIcon(QIcon(_icon_path))
@@ -658,21 +671,27 @@ class App(QMainWindow):
 
         self._root_layout.addWidget(self._build_header())
 
-        body = QWidget()
-        body_lay = QHBoxLayout(body)
-        body_lay.setContentsMargins(10, 8, 10, 8)
-        body_lay.setSpacing(8)
+        # Splitter lets the user drag the left/right boundary at runtime and
+        # ensures the left panel is never squashed narrower than its minimum.
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setContentsMargins(10, 8, 10, 8)
+        splitter.setHandleWidth(6)
 
         left = self._build_left()
         left.setObjectName("leftPanel")
-        left.setMinimumWidth(340)
+        left.setMinimumWidth(360)
 
         right = self._build_right()
         right.setObjectName("rightPanel")
+        right.setMinimumWidth(380)
 
-        body_lay.addWidget(left, stretch=2)
-        body_lay.addWidget(right, stretch=3)
-        self._root_layout.addWidget(body, stretch=1)
+        splitter.addWidget(left)
+        splitter.addWidget(right)
+        # Initial split: ~40 % left, ~60 % right
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 3)
+
+        self._root_layout.addWidget(splitter, stretch=1)
 
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
@@ -729,33 +748,39 @@ class App(QMainWindow):
         sep.setFrameShape(QFrame.Shape.HLine)
         lay.addWidget(sep)
 
-        # Shared action buttons
-        btn_row = QWidget()
-        br_lay = QHBoxLayout(btn_row)
-        br_lay.setContentsMargins(0, 4, 0, 4)
-        br_lay.setSpacing(6)
+        # Shared action buttons — 2×2 grid so text never clips on any screen size.
+        btn_grid = QWidget()
+        bg_lay = QGridLayout(btn_grid)
+        bg_lay.setContentsMargins(0, 4, 0, 4)
+        bg_lay.setSpacing(6)
+        bg_lay.setColumnStretch(0, 1)
+        bg_lay.setColumnStretch(1, 1)
 
         self._btn_save = QPushButton("💾 Save .map")
         self._btn_save.setObjectName("btnSave")
+        self._btn_save.setToolTip("Save the generated .map file")
         self._btn_save.clicked.connect(self._on_save)
 
         self._btn_open_map = QPushButton("📄 Open .map")
         self._btn_open_map.setObjectName("btnOpenMap")
+        self._btn_open_map.setToolTip("Open the .map file in TrenchBroom")
         self._btn_open_map.clicked.connect(self._on_open_map)
 
         self._btn_folder = QPushButton("📂 Map folder")
         self._btn_folder.setObjectName("btnFolder")
+        self._btn_folder.setToolTip("Open the map output folder in Explorer")
         self._btn_folder.clicked.connect(self._on_open_folder)
 
         self._btn_launch = QPushButton("🚀 Launch game")
         self._btn_launch.setObjectName("btnLaunch")
+        self._btn_launch.setToolTip("Launch Diabotical / the configured game")
         self._btn_launch.clicked.connect(self._on_launch_game)
 
-        br_lay.addWidget(self._btn_save,     stretch=1)
-        br_lay.addWidget(self._btn_open_map, stretch=1)
-        br_lay.addWidget(self._btn_folder,   stretch=1)
-        br_lay.addWidget(self._btn_launch,   stretch=1)
-        lay.addWidget(btn_row)
+        bg_lay.addWidget(self._btn_save,     0, 0)
+        bg_lay.addWidget(self._btn_open_map, 0, 1)
+        bg_lay.addWidget(self._btn_folder,   1, 0)
+        bg_lay.addWidget(self._btn_launch,   1, 1)
+        lay.addWidget(btn_grid)
         return w
 
     def _tab_generate(self) -> QWidget:
@@ -769,16 +794,33 @@ class App(QMainWindow):
         lay.setSpacing(4)
         scroll.setWidget(inner)
 
-        # Rooms slider
-        lay.addWidget(_sec_widget("Number of rooms"))
-        rooms_row = QWidget()
-        rr = QHBoxLayout(rooms_row)
-        rr.setContentsMargins(0, 0, 0, 0)
+        # Number of rooms + Rooms/segment — two cells side by side
+        top_row = QWidget()
+        top_row_lay = QHBoxLayout(top_row)
+        top_row_lay.setContentsMargins(0, 4, 0, 0)
+        top_row_lay.setSpacing(10)
+
+        # Left cell: slider
+        rooms_cell = QWidget()
+        rooms_cell_lay = QVBoxLayout(rooms_cell)
+        rooms_cell_lay.setContentsMargins(0, 0, 0, 0)
+        rooms_cell_lay.setSpacing(2)
+
+        rooms_hdr = QWidget()
+        rooms_hdr_lay = QHBoxLayout(rooms_hdr)
+        rooms_hdr_lay.setContentsMargins(0, 0, 0, 0)
+        rooms_hdr_lay.setSpacing(4)
+        lbl_rooms_hdr = QLabel("NUMBER OF ROOMS")
+        lbl_rooms_hdr.setObjectName("secLabel")
+        self._lbl_rooms = QLabel("10")
+        self._lbl_rooms.setObjectName("sliderVal")
+        rooms_hdr_lay.addWidget(lbl_rooms_hdr)
+        rooms_hdr_lay.addStretch()
+        rooms_hdr_lay.addWidget(self._lbl_rooms)
+
         self._spin_rooms = QSpinBox()
         self._spin_rooms.setRange(2, 100)
         self._spin_rooms.setValue(10)
-        self._lbl_rooms = QLabel("10")
-        self._lbl_rooms.setObjectName("sliderVal")
         self._slider_rooms = QSlider(Qt.Orientation.Horizontal)
         self._slider_rooms.setRange(2, 100)
         self._slider_rooms.setValue(10)
@@ -792,9 +834,27 @@ class App(QMainWindow):
             lambda v: (self._slider_rooms.setValue(v),
                        self._lbl_rooms.setText(str(v)),
                        self._schedule_save()))
-        rr.addWidget(self._slider_rooms, stretch=1)
-        rr.addWidget(self._lbl_rooms)
-        lay.addWidget(rooms_row)
+
+        rooms_cell_lay.addWidget(rooms_hdr)
+        rooms_cell_lay.addWidget(self._slider_rooms)
+
+        # Right cell: Rooms / segment spinbox
+        rpt_cell2 = QWidget()
+        rpt_cell2_lay = QVBoxLayout(rpt_cell2)
+        rpt_cell2_lay.setContentsMargins(0, 0, 0, 0)
+        rpt_cell2_lay.setSpacing(2)
+        rpt_lbl2 = QLabel("ROOMS / SEG")
+        rpt_lbl2.setObjectName("secLabel")
+        self._spin_rpt = QSpinBox()
+        self._spin_rpt.setRange(1, 10)
+        self._spin_rpt.setValue(3)
+        self._spin_rpt.valueChanged.connect(self._schedule_save)
+        rpt_cell2_lay.addWidget(rpt_lbl2)
+        rpt_cell2_lay.addWidget(self._spin_rpt)
+
+        top_row_lay.addWidget(rooms_cell, stretch=1)
+        top_row_lay.addWidget(rpt_cell2)
+        lay.addWidget(top_row)
 
         # Seed row
         seed_row = QWidget()
@@ -873,14 +933,8 @@ class App(QMainWindow):
         hint.setObjectName("dimLabel")
         lay.addWidget(hint)
 
-        # Corridor width + Rooms per segment (side by side)
+        # Corridor width
         lay.addWidget(_sec_widget("Corridor & structure"))
-        cw_row = QWidget()
-        cwr = QHBoxLayout(cw_row)
-        cwr.setContentsMargins(0, 0, 0, 0)
-        cwr.setSpacing(8)
-
-        # Corridor width slider
         corr_cell = QWidget()
         corr_lay = QVBoxLayout(corr_cell)
         corr_lay.setContentsMargins(0, 0, 0, 0)
@@ -901,25 +955,7 @@ class App(QMainWindow):
                        self._schedule_save()))
         corr_lay.addWidget(corr_hdr)
         corr_lay.addWidget(self._slider_corr)
-        cwr.addWidget(corr_cell, stretch=1)
-
-        # Rooms per segment (structural, not physics)
-        rpt_cell = QWidget()
-        rpt_lay = QVBoxLayout(rpt_cell)
-        rpt_lay.setContentsMargins(0, 0, 0, 0)
-        rpt_lay.setSpacing(2)
-        rpt_lbl = QLabel("Rooms / segment")
-        rpt_lbl.setObjectName("dimLabel")
-        self._spin_rpt = QSpinBox()
-        self._spin_rpt.setRange(1, 10)
-        self._spin_rpt.setValue(3)
-        self._spin_rpt.setFixedWidth(64)
-        self._spin_rpt.valueChanged.connect(self._schedule_save)
-        rpt_lay.addWidget(rpt_lbl)
-        rpt_lay.addWidget(self._spin_rpt)
-        cwr.addWidget(rpt_cell)
-
-        lay.addWidget(cw_row)
+        lay.addWidget(corr_cell)
 
         # Checkboxes
         self._chk_height = QCheckBox("Height variation between rooms")
@@ -1046,13 +1082,13 @@ class App(QMainWindow):
         sr = QHBoxLayout(sc_row)
         sr.setContentsMargins(0, 0, 0, 8)
         sr.setSpacing(6)
-        # 1:1 defaults: DBT block = 40×20×40 (X×Y_height×Z)
-        # sx = 40 × 2.4 = 96  (DBT-X  → Q3-X)
-        # sy = 40 × 2.4 = 96  (DBT-Z  → Q3-Y)
-        # sz = 20 × 2.2 = 44  (DBT-Y height → Q3-Z)
+        # 1 DBT block = 40×20×40 (X × Y_height × Z).
+        # Grid step: X +=1 → +40 DBT, Y +=1 → +20 DBT, Z +=1 → +40 DBT.
+        # sx, sy scale 1 X/Z grid step; sz scales 1 Y grid step (height).
+        # Defaults: 48, 48, 22 → each block = 48×22×48 Quake units.
         self._spin_rbe_sx = QSpinBox(); self._spin_rbe_sx.setRange(1, 512); self._spin_rbe_sx.setValue(48)
         self._spin_rbe_sy = QSpinBox(); self._spin_rbe_sy.setRange(1, 512); self._spin_rbe_sy.setValue(48)
-        self._spin_rbe_sz = QSpinBox(); self._spin_rbe_sz.setRange(1, 512); self._spin_rbe_sz.setValue(44)
+        self._spin_rbe_sz = QSpinBox(); self._spin_rbe_sz.setRange(1, 512); self._spin_rbe_sz.setValue(22)
         for lbl_txt, sb in [("X:", self._spin_rbe_sx), ("Y:", self._spin_rbe_sy),
                              ("Z (height):", self._spin_rbe_sz)]:
             sr.addWidget(QLabel(lbl_txt))
@@ -1060,7 +1096,7 @@ class App(QMainWindow):
             sb.valueChanged.connect(self._schedule_save)
         lay.addWidget(sc_row)
 
-        hint_scale = QLabel("40 → 48   40 → 48   40 → 44  |  angles: degrees")
+        hint_scale = QLabel("DBT Block 40(x) 20(y) 40(z)  →  Q3 48(x) 48(z) 22(y)")
         hint_scale.setObjectName("dimLabel")
         lay.addWidget(hint_scale)
 
@@ -1307,6 +1343,14 @@ class App(QMainWindow):
         tr.addWidget(self._theme_toggle)
         lay.addWidget(theme_row)
 
+        # Reset to defaults
+        lay.addWidget(_sec_widget("Reset"))
+        btn_reset = QPushButton("🔄 Reset all settings to defaults")
+        btn_reset.setObjectName("btnSmall")
+        btn_reset.setToolTip("Resets all parameters to factory defaults (paths are kept)")
+        btn_reset.clicked.connect(self._reset_defaults)
+        lay.addWidget(btn_reset)
+
         lay.addStretch()
 
         # Default output folder
@@ -1458,10 +1502,7 @@ class App(QMainWindow):
             self._edit_out_folder.setText(os.path.dirname(cfg["out_path"]))
         if cfg.get("rbe_sx"):       self._spin_rbe_sx.setValue(cfg["rbe_sx"])
         if cfg.get("rbe_sy"):       self._spin_rbe_sy.setValue(cfg["rbe_sy"])
-        # Restore sz only if it looks intentionally set (>= 40); old configs had
-        # stale values of 42 or 22 that were wrong defaults — skip those.
-        if cfg.get("rbe_sz") and cfg["rbe_sz"] >= 40:
-            self._spin_rbe_sz.setValue(cfg["rbe_sz"])
+        if cfg.get("rbe_sz"):       self._spin_rbe_sz.setValue(cfg["rbe_sz"])
         if cfg.get("n_rooms"):      self._slider_rooms.setValue(cfg["n_rooms"])
         if cfg.get("layout"):
             self._current_layout = cfg["layout"]
@@ -1526,6 +1567,39 @@ class App(QMainWindow):
             if hasattr(self, attr):
                 d[attr] = getattr(self, attr).value()
         save_app_cfg(d)
+
+    def _reset_defaults(self):
+        """Reset all numeric/checkbox settings to factory defaults.
+
+        File paths (output folder, texture folder, game exe, rbe path) are
+        kept because they are machine-specific and annoying to re-enter.
+        """
+        # Generate tab
+        self._slider_rooms.setValue(10)
+        self._spin_rpt.setValue(3)
+        self._slider_corr.setValue(67)
+        self._chk_height.setChecked(True)
+        self._chk_checks.setChecked(True)
+        for lbl, val in [("Min W", 384), ("Max W", 2048), ("Min D", 256),
+                         ("Max D", 768), ("Min H", 256), ("Max H", 640)]:
+            self._sz[lbl].setValue(val)
+        # Physics
+        self._chk_physics.setChecked(False)
+        self._spin_u_base.setValue(550)
+        self._spin_u_gain.setValue(60)
+        self._spin_t_air.setValue(68)
+        self._spin_strafe_f.setValue(20)
+        # DBT Import scale
+        self._spin_rbe_sx.setValue(48)
+        self._spin_rbe_sy.setValue(48)
+        self._spin_rbe_sz.setValue(22)
+        # Preview
+        self._chk_prev_labels.setChecked(True)
+        self._chk_prev_hmap.setChecked(True)
+        self._chk_prev_ramps.setChecked(True)
+        # Persist immediately
+        self._flush_settings()
+        self._log("All settings reset to defaults.", "info")
 
     # ── Generation ────────────────────────────────────────────────────────
     def _collect_cfg(self) -> dict:
