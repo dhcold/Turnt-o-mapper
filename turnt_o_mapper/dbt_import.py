@@ -542,8 +542,6 @@ def rbe_entities_to_map(entities, sx, sy, sz, opaque_tex="turnt/turnt_concrete")
             # All coords in DBT world-units (1 block = 40 X/Z, 20 Y).
             # box / box_corner: 100u per axis at scale 1.
             # diagonal:          40u per axis at scale 1.
-            ang = e.get("yrot", 0.0) % (2 * math.pi)
-
             if prop_shape in ("box", "box_corner"):
                 BASE = 100.0
                 fx = max(MIN_HALF, abs(e.get("xscale", 1.0)) * BASE * EFX)
@@ -630,36 +628,33 @@ def rbe_entities_to_map(entities, sx, sy, sz, opaque_tex="turnt/turnt_concrete")
                     prop_tex, f"prop_box_corner {nm}"))
 
             # ── diagonal: 5-face wedge, anchor at corner ─────────────
+            # Local-space wedge (before rotation):
+            #   Base triangle in XY at Z=0, extruded to Z=fz.
+            #   Vertices: A(0,0,0) B(fx,0,0) C(0,fy,0) + top copies.
+            #   The sloped face goes from edge AB(z=0) to C(z=fz).
             elif prop_shape == "diagonal":
-                z0, z1 = qz, qz + fz
-                if ang < math.pi / 4 or ang >= 7 * math.pi / 4:
-                    x0, x1 = qx, qx + fx
-                    y0, y1 = qy, qy + fy
-                    f_w1 = face((x0, y0, z0), (x0, y1, z0), (x0, y0, z1), prop_tex)
-                    f_w2 = face((x1, y1, z1), (x0, y1, z1), (x1, y1, z0), prop_tex)
-                    f_dia = face((x0, y0, z1), (x1, y1, z1 + 1), (x1, y1, z1), prop_tex)
-                elif ang < 3 * math.pi / 4:
-                    x0, x1 = qx, qx + fx
-                    y0, y1 = qy - fy, qy
-                    f_w1 = face((x1, y1, z1), (x1, y1, z0), (x1, y0, z1), prop_tex)
-                    f_w2 = face((x1, y1, z1), (x0, y1, z1), (x1, y1, z0), prop_tex)
-                    f_dia = face((x0, y1, z1), (x1, y0, z1 + 1), (x1, y0, z1), prop_tex)
-                elif ang < 5 * math.pi / 4:
-                    x0, x1 = qx - fx, qx
-                    y0, y1 = qy - fy, qy
-                    f_w1 = face((x1, y1, z1), (x1, y1, z0), (x1, y0, z1), prop_tex)
-                    f_w2 = face((x0, y0, z0), (x0, y0, z1), (x1, y0, z0), prop_tex)
-                    f_dia = face((x1, y1, z1), (x0, y0, z1 + 1), (x0, y0, z1), prop_tex)
-                else:
-                    x0, x1 = qx - fx, qx
-                    y0, y1 = qy, qy + fy
-                    f_w1 = face((x0, y0, z0), (x0, y1, z0), (x0, y0, z1), prop_tex)
-                    f_w2 = face((x0, y0, z0), (x0, y0, z1), (x1, y0, z0), prop_tex)
-                    f_dia = face((x0, y1, z1), (x1, y0, z1), (x1, y0, z1 + 1), prop_tex)
-                f_bot = face((x0, y0, z0), (x1, y0, z0), (x0, y1, z0), prop_tex)
-                f_top = face((x1, y1, z1), (x1, y0, z1), (x0, y0, z1), prop_tex)
+                # 6 local-space vertices of the wedge (anchor at corner)
+                local_verts = [
+                    (0,   0,   0),     # 0: base-A
+                    (fx,  0,   0),     # 1: base-B
+                    (0,   fy,  0),     # 2: base-C
+                    (0,   0,   fz),    # 3: top-A
+                    (fx,  0,   fz),    # 4: top-B
+                    (0,   fy,  fz),    # 5: top-C
+                ]
+                # Rotate all vertices and offset to world position
+                c = []
+                for lx_, ly_, lz_ in local_verts:
+                    dx, dy, dz = _rot3d(lx_, ly_, lz_)
+                    c.append((qx + dx, qy + dy, qz + dz))
+                # 5 faces (triangulated quads where needed)
+                f_bot  = face(c[0], c[1], c[2], prop_tex)   # bottom tri
+                f_top  = face(c[5], c[4], c[3], prop_tex)   # top tri
+                f_back = face(c[0], c[3], c[1], prop_tex)   # quad: A-D-E-B (Y=0 side)
+                f_left = face(c[0], c[2], c[3], prop_tex)   # quad: A-C-F-D (X=0 side)
+                f_dia  = face(c[1], c[4], c[2], prop_tex)   # slope: B-E-F-C
                 brushes.append(write_brush(
-                    [f_bot, f_top, f_w1, f_w2, f_dia], f"diag_prop {nm}"))
+                    [f_bot, f_top, f_back, f_left, f_dia], f"diag_prop {nm}"))
 
             # ── cylinder ─────────────────────────────────────────────
             elif prop_shape == "cylinder":
