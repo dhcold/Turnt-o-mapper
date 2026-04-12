@@ -18,7 +18,7 @@ from typing import Dict
 ALL_TEXTURES: Dict[str, int] = {
     "NULL":2,"common/caulk":2,"common/lavacaulk":4,"common/nodraw":2,
     "common/nodrawnonsolid":2,"common/slick":5,"common/slimecaulk":4,
-    "common/watercaulk":3,"common/weapclip":2,"common/playerclip":2,
+    "common/watercaulk":3,"common/weapclip":2,
     "turnt/temp_blue":8,"turnt/temp_dark":0,"turnt/temp_green":7,
     "turnt/temp_light":1,"turnt/temp_orange":9,"turnt/temp_purple":10,
     "turnt/temp_red":6,"turnt/temp_yellow":11,
@@ -68,10 +68,11 @@ DOOR_H = 128  # default door height
 # ══════════════════════════════════════════════════════════════════════════════
 #  RAMP PHYSICS CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════
-SLOPE_RATIO    = 3.73  # horizontal / vertical ~= 15deg -- shallowest target
+MIN_RAMP_ANGLE = 10    # degrees -- shallowest (ideal) ramp angle
 MAX_RAMP_ANGLE = 30    # degrees -- steepest allowed ramp
-# Minimum slope ratio that keeps angle <= MAX_RAMP_ANGLE: 1/tan(30deg) ~= 1.732
-MIN_SLOPE_RATIO = 1.0 / math.tan(math.radians(MAX_RAMP_ANGLE))
+# Slope ratios: horizontal / vertical
+SLOPE_RATIO     = 1.0 / math.tan(math.radians(MIN_RAMP_ANGLE))  # ~5.67 for 10°
+MIN_SLOPE_RATIO = 1.0 / math.tan(math.radians(MAX_RAMP_ANGLE))  # ~1.73 for 30°
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  THEME PALETTES

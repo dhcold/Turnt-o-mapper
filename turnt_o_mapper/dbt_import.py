@@ -10,9 +10,95 @@ pipeline and accepts a ``log_fn`` callback for progress reporting.
 """
 
 import math
+import struct
 import sys
 import time
 from typing import Dict, List, Optional
+
+
+# ── Color → texture mapping ──────────────────────────────────────────────────
+# Maps hex RGB colours found on invisible props to the nearest turnt texture.
+
+_COLOR_PALETTE = [
+    # (R, G, B, texture_name)
+    (0,   0,   0,   "turnt/temp_dark"),
+    (255, 255, 255, "turnt/temp_light"),
+    (255, 0,   0,   "turnt/temp_red"),
+    (0,   128, 0,   "turnt/temp_green"),
+    (0,   0,   255, "turnt/temp_blue"),
+    (255, 165, 0,   "turnt/temp_orange"),
+    (128, 0,   128, "turnt/temp_purple"),
+    (255, 255, 0,   "turnt/temp_yellow"),
+    (0,   255, 255, "turnt/turnt_cyan"),
+    (255, 0,   255, "turnt/turnt_magenta"),
+    (0,   255, 128, "turnt/turnt_mint"),
+    (128, 255, 0,   "turnt/turnt_lime"),
+    (255, 215, 0,   "turnt/turnt_gold"),
+    (0,   128, 128, "turnt/turnt_teal"),
+    (128, 0,   255, "turnt/turnt_violet"),
+    (255, 128, 128, "turnt/turnt_coral"),
+    (135, 206, 235, "turnt/turnt_sky"),
+]
+
+# Material name → texture fallback
+_MATERIAL_MAP: Dict[str, str] = {
+    "concrete":    "turnt/turnt_concrete",
+    "asphalt":     "turnt/turnt_asphalt",
+    "tech":        "turnt/turnt_tech",
+    "slick":       "common/slick",
+    "boost":       "turnt/turnt_boost",
+    "speed":       "turnt/turnt_speed",
+    "hazard":      "turnt/turnt_hazard",
+    "checkpoint":  "turnt/turnt_checkpoint",
+    "platform":    "turnt/turnt_platform",
+}
+
+
+def _parse_hex_color(s: str) -> Optional[tuple]:
+    """Parse hex color string (AARRGGBB, RRGGBB, #RRGGBB) → (R, G, B) or None."""
+    s = s.strip().lstrip("#")
+    if not s:
+        return None
+    try:
+        if len(s) == 8:          # AARRGGBB
+            r, g, b = int(s[2:4], 16), int(s[4:6], 16), int(s[6:8], 16)
+        elif len(s) == 6:        # RRGGBB
+            r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+        else:
+            return None
+        return (r, g, b)
+    except ValueError:
+        return None
+
+
+def _nearest_texture(r: int, g: int, b: int) -> str:
+    """Find the turnt texture with the closest RGB distance."""
+    best_dist = float("inf")
+    best_tex = "turnt/temp_dark"
+    for pr, pg, pb, tex in _COLOR_PALETTE:
+        d = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
+        if d < best_dist:
+            best_dist = d
+            best_tex = tex
+    return best_tex
+
+
+def _resolve_prop_texture(props: dict, fallback: str) -> str:
+    """Pick a texture for an invisible prop based on color/material properties."""
+    # Material takes priority (exact name match)
+    mat = props.get("material", "").lower()
+    if mat:
+        for key, tex in _MATERIAL_MAP.items():
+            if key in mat:
+                return tex
+
+    # Color fallback — parse hex and find nearest palette entry
+    color_str = props.get("color", "")
+    rgb = _parse_hex_color(color_str)
+    if rgb:
+        return _nearest_texture(*rgb)
+
+    return fallback
 
 # Allow running this file directly (e.g. for quick testing)
 try:
@@ -440,17 +526,17 @@ def rbe_entities_to_map(entities, sx, sy, sz, opaque_tex="turnt/turnt_concrete")
             clip_v  = props.get("clip", "fullclip").lower()
 
             if no_show:
-                prop_tex = "common/clip"
+                prop_tex = _resolve_prop_texture(props, "common/nodraw")
             elif slide_v == "1" or slide_v == "2":
                 prop_tex = "common/slick"
             elif clip_v == "noclip":
                 prop_tex = NODRAW_TEX
             elif clip_v == "playerclip":
-                prop_tex = "common/clip"
+                prop_tex = _resolve_prop_texture(props, "common/nodraw")
             elif clip_v == "weapon":
                 prop_tex = "common/weapclip"
             else:
-                prop_tex = opaque_tex   # fullclip + visible → solid
+                prop_tex = _resolve_prop_texture(props, opaque_tex)
 
             # ── Size: base differs per shape ─────────────────────────
             # All coords in DBT world-units (1 block = 40 X/Z, 20 Y).
@@ -480,18 +566,24 @@ def rbe_entities_to_map(entities, sx, sy, sz, opaque_tex="turnt/turnt_concrete")
             zrot = e.get("zrot", 0.0)
 
             def _rot3d(lx, ly, lz):
-                """Rotate local offset (lx, ly, lz) by xrot/yrot/zrot."""
-                # Yaw (around Q-Z axis = DBT Y-up)
-                cy_, sy_ = math.cos(yrot), math.sin(yrot)
-                x1 =  cy_ * lx + sy_ * ly
-                y1 = -sy_ * lx + cy_ * ly
-                z1 =  lz
-                # Pitch (around Q-X axis = DBT X)
+                """Rotate local offset (lx, ly, lz) by xrot/yrot/zrot.
+
+                The Y↔Z axis swap (DBT→Q3) has determinant -1, so all
+                rotation angles are effectively negated.  Using CW
+                matrices with the original angles achieves this.
+                Order: Pitch → Yaw → Roll.
+                """
+                # Pitch — around Q-X, angle = -xrot
                 cx_, sx_ = math.cos(xrot), math.sin(xrot)
-                x2 =  x1
-                y2 =  cx_ * y1 - sx_ * z1
-                z2 =  sx_ * y1 + cx_ * z1
-                # Roll (around Q-Y axis = DBT Z)
+                x1 =  lx
+                y1 =  cx_ * ly + sx_ * lz
+                z1 = -sx_ * ly + cx_ * lz
+                # Yaw — around Q-Z, angle = -yrot
+                cy_, sy_ = math.cos(yrot), math.sin(yrot)
+                x2 =  cy_ * x1 + sy_ * y1
+                y2 = -sy_ * x1 + cy_ * y1
+                z2 =  z1
+                # Roll — around Q-Y, angle = -zrot
                 cz_, sz_ = math.cos(zrot), math.sin(zrot)
                 x3 =  cz_ * x2 - sz_ * z2
                 y3 =  y2
@@ -571,14 +663,15 @@ def rbe_entities_to_map(entities, sx, sy, sz, opaque_tex="turnt/turnt_concrete")
 
             # ── cylinder ─────────────────────────────────────────────
             elif prop_shape == "cylinder":
-                cyl_ang = e.get("yrot", 0.0)
                 outer_r = max(MIN_HALF, abs(e.get("xscale", 1.0)) * sx * 4)
-                wall_t  = sx / 2.0
-                inner_r = outer_r - wall_t
+                wall_t  = max(4.0, sx / 4.0)
+                inner_r = max(MIN_HALF, outer_r - wall_t)
                 fz_cyl  = max(MIN_HALF, abs(e.get("yscale", 1.0)) * 100 * EFZ)
                 z_bot   = qz - fz_cyl / 2
                 z_top   = qz + fz_cyl / 2
                 arc_step = float(sx)
+                # Quarter circle (π/2) starting at entity yaw
+                cyl_ang = e.get("yrot", 0.0)
                 cyl_strs = cylinder_brushes(
                     qx, qy, z_bot, z_top,
                     inner_r, outer_r,
@@ -672,7 +765,7 @@ def run_import(path, sx, sy, sz, log_fn=None):
     CLIP_TEX = {
         2: "common/caulk",
         4: "common/weapclip",
-        5: "common/clip",
+        5: "common/nodraw",
     }
     solid_blocks  = [b for b in blocks if b["type"] == 1]
     corner_blocks = [b for b in blocks if b["type"] == 3]
