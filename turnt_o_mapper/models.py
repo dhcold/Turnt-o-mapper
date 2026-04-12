@@ -30,6 +30,7 @@ class Room:
     floor_t:      str   = "turnt/turnt_concrete"
     wall_t:       str   = "turnt/turnt_tech"
     ceil_t:       str   = "turnt/turnt_sky"
+    accent_t:     str   = "turnt/turnt_cyan"
     travel_axis:  str   = 'x'
     speed_in:     float = 550.0
     door_hw:      int   = 64

@@ -14,6 +14,7 @@ import random
 from .constants import (
     WALL_T, DOOR_H, HIDDEN_TEX,
     SLOPE_RATIO, MAX_RAMP_ANGLE, MIN_SLOPE_RATIO,
+    RAMP_TEX, OUTLINE_W,
 )
 from .layout import _clip_footprint, _clip_intervals
 
@@ -87,24 +88,50 @@ def write_brush(faces, cmt=""):
 #  ROOM COMPONENTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def room_floor(x1, y1, z1, x2, y2, z2, floor_t, tag, bi, clips=()):
-    """Generate floor brush(es) for a room, minus any clip regions.
+def room_floor(x1, y1, z1, x2, y2, z2, floor_t, tag, bi, clips=(),
+               accent_t=None):
+    """Generate floor brush(es) for a room with outline border.
 
-    The floor slab is WALL_T thick, sitting just below z1.  Clip regions
-    (from overlapping rooms) are subtracted so the floor does not create
-    solid geometry inside another room's volume.
+    Outline borders are drawn along the ORIGINAL room edges (x1/y1/x2/y2),
+    then clipped.  This avoids z-fighting at clip boundaries where a
+    neighbouring room's floor would coincide with an outline strip.
 
     Returns ``(brush_strings, next_brush_index)``.
     """
     H   = WALL_T
+    OL  = OUTLINE_W
     oz1 = z1 - H
+
+    def _emit(rx1, ry1, rx2, ry2, tex, lbl):
+        nonlocal bi
+        if rx1 >= rx2 or ry1 >= ry2:
+            return
+        fs = box_faces(rx1, ry1, oz1, rx2, ry2, z1,
+                       tex, tex, tex, tex, tex, tex)
+        parts.append(write_brush(fs, f"brush {bi} {tag}_{lbl}"))
+        bi += 1
+
     parts = []
-    for rx1, ry1, rx2, ry2 in _clip_footprint(x1, y1, x2, y2, clips):
-        if rx1 < rx2 and ry1 < ry2 and oz1 < z1:
-            fs = box_faces(rx1, ry1, oz1, rx2, ry2, z1,
-                           floor_t, floor_t, floor_t, floor_t, floor_t, floor_t)
-            parts.append(write_brush(fs, f"brush {bi} {tag}_floor"))
-            bi += 1
+    if accent_t and (x2 - x1) > 2 * OL and (y2 - y1) > 2 * OL:
+        # Interior rectangle (main texture) — then clip
+        ix1, iy1 = x1 + OL, y1 + OL
+        ix2, iy2 = x2 - OL, y2 - OL
+        for rx1, ry1, rx2, ry2 in _clip_footprint(ix1, iy1, ix2, iy2, clips):
+            _emit(rx1, ry1, rx2, ry2, floor_t, "floor")
+
+        # Four border strips along original edges — then clip each
+        borders = [
+            (x1, y1, x2, iy1),   # bottom
+            (x1, iy2, x2, y2),   # top
+            (x1, iy1, ix1, iy2), # left
+            (ix2, iy1, x2, iy2), # right
+        ]
+        for bx1, by1, bx2, by2 in borders:
+            for rx1, ry1, rx2, ry2 in _clip_footprint(bx1, by1, bx2, by2, clips):
+                _emit(rx1, ry1, rx2, ry2, accent_t, "floor_ol")
+    else:
+        for rx1, ry1, rx2, ry2 in _clip_footprint(x1, y1, x2, y2, clips):
+            _emit(rx1, ry1, rx2, ry2, floor_t, "floor")
     return parts, bi
 
 
@@ -270,9 +297,11 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
     H = WALL_T
     parts = []
 
+    ramp_tex = RAMP_TEX
+
     def ramp5(f1, f2, f3, f4, f5, lbl):
         nonlocal bi
-        faces = [face(a, b, c, floor_t) for (a, b, c) in (f1, f2, f3, f4, f5)]
+        faces = [face(a, b, c, ramp_tex) for (a, b, c) in (f1, f2, f3, f4, f5)]
         parts.append(write_brush(faces, f"brush {bi} {tag}_{lbl}"))
         bi += 1
 
@@ -329,6 +358,9 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
                lbl="ramp_ce")
             cb(xlo - H, elo, z_lo - H, xlo, ehi, ceil_top + H, lbl="ramp_w1")
             cb(xhi,     elo, z_lo - H, xhi + H, ehi, ceil_top + H, lbl="ramp_w2")
+            cb(xlo, elo, z_lo - H, xhi, ehi, z_lo,
+               nx=floor_t, px=floor_t, ny=floor_t, py=floor_t,
+               nz=floor_t, pz=floor_t, lbl="ramp_fl")
 
     else:  # axis == 'x'
         if x0 > x1:
@@ -370,6 +402,9 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
                lbl="ramp_ce")
             cb(elo, ylo - H, z_lo - H, ehi, ylo, ceil_top + H, lbl="ramp_w1")
             cb(elo, yhi,     z_lo - H, ehi, yhi + H, ceil_top + H, lbl="ramp_w2")
+            cb(elo, ylo, z_lo - H, ehi, yhi, z_lo,
+               nx=floor_t, px=floor_t, ny=floor_t, py=floor_t,
+               nz=floor_t, pz=floor_t, lbl="ramp_fl")
 
     return parts, bi
 
@@ -428,17 +463,48 @@ def _wallramp_brushes(room, bi):
 
 
 def _adaptive_ramp_len(dz: int, max_available: int) -> int:
-    """Choose ramp horizontal length given height difference and available space.
+    """Choose ramp horizontal length with a progressive random angle.
 
-    Prefers the ideal shallow slope (SLOPE_RATIO ~= 14 deg).  If space is
-    tight the angle steepens up to MAX_RAMP_ANGLE degrees.  Never shorter
-    than the bare minimum dictated by the steepest allowed angle.
+    Picks a random target angle between 15 deg and 25 deg, computes the
+    corresponding ramp length, then clamps to the available space.
+    **Never returns more than max_available** — the caller must reduce
+    dz if the resulting angle would exceed 30 deg.
     """
-    ideal   = int(dz * SLOPE_RATIO)
-    min_len = int(math.ceil(dz * MIN_SLOPE_RATIO))
     if max_available <= 0:
-        return max(min_len, abs(dz))
-    return max(min(ideal, max_available), min_len)
+        return max(abs(dz), 1)
+    # Random target between 15° and 25° — variety in ramp feel
+    target_angle = random.uniform(15, 25)
+    target_len = int(dz / math.tan(math.radians(target_angle)))
+    return min(target_len, max_available)
+
+
+def compute_bridge_footprint(ax, ay, az, bx, by, bz,
+                             axis, door_hw=64,
+                             ra_far=None, rb_far=None):
+    """Compute the GAP-ZONE footprint of a bridge corridor.
+
+    Returns ``(fp_x1, fp_y1, fp_x2, fp_y2, z_floor)`` covering ONLY the
+    gap between room walls (where the corridor/ramp floor brush sits).
+    Room floors inside rooms are kept intact — only the gap is clipped.
+    """
+    H  = WALL_T
+    hw = door_hw
+    z_floor = min(az, bz)
+
+    if axis == 'x':
+        xmn = min(ax, bx) + H
+        xmx = max(ax, bx) - H
+        cy = (ay + by) // 2
+        if xmn >= xmx:
+            return None
+        return (xmn, cy - hw, xmx, cy + hw, z_floor)
+    else:
+        ymn = min(ay, by) + H
+        ymx = max(ay, by) - H
+        cx = (ax + bx) // 2
+        if ymn >= ymx:
+            return None
+        return (cx - hw, ymn, cx + hw, ymx, z_floor)
 
 
 def corridor_brushes(ax, ay, az, bx, by, bz,
@@ -472,6 +538,17 @@ def corridor_brushes(ax, ay, az, bx, by, bz,
         lo_far = ra_far if ax <= bx else rb_far
         hi_far = rb_far if ax <= bx else ra_far
 
+        def _clamp_dz(actual_len, cur_dz, cur_lo, cur_hi):
+            """Reduce dz so the ramp angle never exceeds 30 deg."""
+            if actual_len <= 0:
+                return cur_lo, cur_hi
+            max_dz = int(actual_len / MIN_SLOPE_RATIO)
+            if cur_hi - cur_lo > max_dz:
+                mid = (cur_lo + cur_hi) // 2
+                cur_lo = mid - max_dz // 2
+                cur_hi = mid + max_dz // 2
+            return cur_lo, cur_hi
+
         if axis == 'x':
             if lo_z <= hi_z:
                 x_hi = hi_x - H
@@ -485,6 +562,8 @@ def corridor_brushes(ax, ay, az, bx, by, bz,
                 max_available = x_hi_limit - x_lo
                 ramp_len = _adaptive_ramp_len(dz, max_available)
                 x_hi = min(x_lo + ramp_len, x_hi_limit)
+            actual_len = x_hi - x_lo
+            lo_z, hi_z = _clamp_dz(actual_len, dz, lo_z, hi_z)
             return _ramp_brushes(x_lo, ay, lo_z, x_hi, by, hi_z,
                                  axis, door_hw, door_ht,
                                  floor_t, ceil_t, wall_t,
@@ -508,6 +587,8 @@ def corridor_brushes(ax, ay, az, bx, by, bz,
                 max_available = y_hi_limit - y_lo
                 ramp_len = _adaptive_ramp_len(dz, max_available)
                 y_hi = min(y_lo + ramp_len, y_hi_limit)
+            actual_len = y_hi - y_lo
+            lo_zy, hi_zy = _clamp_dz(actual_len, dz, lo_zy, hi_zy)
             return _ramp_brushes(ax, y_lo, lo_zy, bx, y_hi, hi_zy,
                                  axis, door_hw, door_ht,
                                  floor_t, ceil_t, wall_t,

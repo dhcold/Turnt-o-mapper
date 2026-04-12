@@ -158,21 +158,26 @@ def _add_passthrough_doors(rooms, bridges, room_doors):
 #  FOOTPRINT / WALL CLIP COMPUTATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _compute_footprint_clips(room, all_rooms, face_z):
+def _compute_footprint_clips(room, all_rooms, face_z, bridge_clips=(),
+                              adjacent_indices=()):
     """Return XY rectangles to subtract from a room's floor or ceiling.
 
-    A region is clipped when the horizontal face at *face_z* is strictly
-    inside another room's Z range -- that other room "swallows" this face.
+    A region is clipped ONLY when the other room is directly adjacent
+    (connected by a bridge) and its Z range strictly contains *face_z*.
+    Non-adjacent rooms that happen to share XY space are left alone --
+    the map compiler resolves those via CSG.
 
-    Used for:
-    - **floor** (face_z = room.z1): prevents a solid platform inside a
-      taller room that contains this room's floor level.
-    - **ceiling** (face_z = room.z2): prevents a solid sheet inside a
-      taller adjacent room.
+    Parameters:
+        bridge_clips: ``(x1, y1, x2, y2, z_floor)`` footprints of
+            corridor / ramp brushes.
+        adjacent_indices: set of room indices directly connected to
+            *room* via a bridge.
     """
     clips = []
     for j in all_rooms:
         if j is room:
+            continue
+        if j.idx not in adjacent_indices:
             continue
         if not (j.z1 < face_z < j.z2):
             continue
@@ -180,17 +185,39 @@ def _compute_footprint_clips(room, all_rooms, face_z):
         ylo = max(room.y1, j.y1); yhi = min(room.y2, j.y2)
         if xlo < xhi and ylo < yhi:
             clips.append((xlo, ylo, xhi, yhi))
+
+    for bfp in bridge_clips:
+        if len(bfp) == 7:
+            bx1, by1, bx2, by2, bz_floor, ba_idx, bb_idx = bfp
+            # Don't clip rooms connected to this bridge OR rooms
+            # between the endpoints (passthrough rooms hit by shortcuts)
+            lo_idx = min(ba_idx, bb_idx)
+            hi_idx = max(ba_idx, bb_idx)
+            if lo_idx <= room.idx <= hi_idx:
+                continue
+        else:
+            bx1, by1, bx2, by2, bz_floor = bfp
+        if abs(face_z - bz_floor) > WALL_T:
+            continue
+        xlo = max(room.x1, bx1); xhi = min(room.x2, bx2)
+        ylo = max(room.y1, by1); yhi = min(room.y2, by2)
+        if xlo < xhi and ylo < yhi:
+            clips.append((xlo, ylo, xhi, yhi))
+
     return clips
 
 
-def _compute_wall_clips(room, all_rooms, doors):
-    """Compute wall-clip intervals using the CheckRoomOverlap approach.
+def _compute_wall_clips(room, all_rooms, doors, adjacent_indices=()):
+    """Compute wall-clip intervals.
 
-    For each of the four wall faces, finds intervals along the wall's
-    variable axis that are *strictly* inside another room's 3D volume.
-    Strict inequalities mean touching walls (gap = 0) are NOT clipped --
-    door openings handle those.  Door spans are explicitly preserved so
-    they are never accidentally clipped.
+    Two clip sources:
+
+    1. **Nearby rooms** (in *adjacent_indices*): standard wall clipping
+       where another room's boundary penetrates this room's wall.
+
+    2. **Far-apart rooms**: if another room's floor level is inside this
+       room's Z range AND the rooms overlap in XY, the wall is clipped in
+       the overlap area so the other route's floor remains passable.
 
     Returns a dict compatible with ``room_walls()``::
 
@@ -205,25 +232,44 @@ def _compute_wall_clips(room, all_rooms, doors):
         if not (j.z1 < room.z2 and j.z2 > room.z1):
             continue
 
-        if j.x1 < room.x1 < j.x2:
+        is_nearby = j.idx in adjacent_indices
+
+        if is_nearby:
+            # Standard: clip where j's boundary is inside room's wall
+            if j.x1 < room.x1 < j.x2:
+                ylo = max(room.y1, j.y1); yhi = min(room.y2, j.y2)
+                if ylo < yhi:
+                    clips.setdefault('wx1', []).append((ylo, yhi))
+            if j.x1 < room.x2 < j.x2:
+                ylo = max(room.y1, j.y1); yhi = min(room.y2, j.y2)
+                if ylo < yhi:
+                    clips.setdefault('wx2', []).append((ylo, yhi))
+            if j.y1 < room.y1 < j.y2:
+                xlo = max(room.x1, j.x1); xhi = min(room.x2, j.x2)
+                if xlo < xhi:
+                    clips.setdefault('wy1', []).append((xlo, xhi))
+            if j.y1 < room.y2 < j.y2:
+                xlo = max(room.x1, j.x1); xhi = min(room.x2, j.x2)
+                if xlo < xhi:
+                    clips.setdefault('wy2', []).append((xlo, xhi))
+        else:
+            # Far-apart: clip wall where j's floor zone passes through,
+            # so the other route remains walkable.
+            if not (room.z1 <= j.z1 < room.z2):
+                continue  # j's floor not inside this room's Z range
+            # Clip each wall in the XY overlap area
             ylo = max(room.y1, j.y1); yhi = min(room.y2, j.y2)
-            if ylo < yhi:
-                clips.setdefault('wx1', []).append((ylo, yhi))
-
-        if j.x1 < room.x2 < j.x2:
-            ylo = max(room.y1, j.y1); yhi = min(room.y2, j.y2)
-            if ylo < yhi:
-                clips.setdefault('wx2', []).append((ylo, yhi))
-
-        if j.y1 < room.y1 < j.y2:
             xlo = max(room.x1, j.x1); xhi = min(room.x2, j.x2)
+            if ylo < yhi:
+                if room.x1 >= j.x1 and room.x1 <= j.x2:
+                    clips.setdefault('wx1', []).append((ylo, yhi))
+                if room.x2 >= j.x1 and room.x2 <= j.x2:
+                    clips.setdefault('wx2', []).append((ylo, yhi))
             if xlo < xhi:
-                clips.setdefault('wy1', []).append((xlo, xhi))
-
-        if j.y1 < room.y2 < j.y2:
-            xlo = max(room.x1, j.x1); xhi = min(room.x2, j.x2)
-            if xlo < xhi:
-                clips.setdefault('wy2', []).append((xlo, xhi))
+                if room.y1 >= j.y1 and room.y1 <= j.y2:
+                    clips.setdefault('wy1', []).append((xlo, xhi))
+                if room.y2 >= j.y1 and room.y2 <= j.y2:
+                    clips.setdefault('wy2', []).append((xlo, xhi))
 
     # Preserve door openings
     for door in doors:
