@@ -139,7 +139,7 @@ turnt_o_mapper/
   constants.py           Texture registry, theme colours, geometry params
   models.py              Room & Bridge dataclasses
   config.py              JSON config persistence
-  updater.py             GitHub Releases auto-update
+  updater.py             GitHub Releases auto-update (you can opt-out in Settings tab)
   __version__.py         Version string
 ```
 
