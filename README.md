@@ -20,7 +20,7 @@ https://github.com/user-attachments/assets/bf2cc399-6ba0-4a6d-8344-d6d4bd615e6f
 - **Physics model** — acceleration-based speed simulation per room segment
 - **Texture selector** — assign floor / wall / ceiling textures with F/W/C checkboxes; the generator picks one set per map from the enabled pool
 - **Diabotical `.rbe` importer** — import existing DBT maps with configurable XYZ scale
-- **Auto-update** — checks GitHub Releases on startup and downloads new versions automatically
+- **Auto-update** — checks GitHub Releases on startup and downloads new versions automatically (you can opt-out in Settings tab)
 
 ---
 
@@ -141,7 +141,7 @@ turnt_o_mapper/
   constants.py           Texture registry, theme colours, geometry params
   models.py              Room & Bridge dataclasses
   config.py              JSON config persistence
-  updater.py             GitHub Releases auto-update (you can opt-out in Settings tab)
+  updater.py             GitHub Releases auto-update
   __version__.py         Version string
 ```
 
