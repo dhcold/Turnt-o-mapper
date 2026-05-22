@@ -7,7 +7,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import urllib.request
 from typing import Callable, Optional
@@ -91,9 +90,10 @@ def download_and_restart(
     On other platforms the binary is replaced directly (the running process
     has already released its file lock on Unix).
     """
-    suffix = ".exe" if sys.platform == "win32" else ""
-    tmp = tempfile.mktemp(suffix=suffix, prefix="turnt-update-")
     current = _current_exe()
+    exe_dir = os.path.dirname(current)
+    suffix = ".exe" if sys.platform == "win32" else ""
+    tmp = os.path.join(exe_dir, f"turnt-update-{version}{suffix}")
 
     def _dl():
         try:
@@ -111,6 +111,11 @@ def download_and_restart(
                 subprocess.Popen([current])
                 sys.exit(0)
         except Exception as ex:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
             if status_cb:
                 status_cb(f"Update failed: {ex}")
 
@@ -120,7 +125,8 @@ def download_and_restart(
 def _replace_and_restart_win(tmp: str, current: str) -> None:
     """Windows-specific: use a .bat helper to swap the exe after this process exits."""
     pid = os.getpid()
-    bat = tempfile.mktemp(suffix=".bat", prefix="turnt-updater-")
+    exe_dir = os.path.dirname(current)
+    bat = os.path.join(exe_dir, "turnt-updater.bat")
 
     # The batch script:
     #  1. Waits until the current process exits (tasklist polling)

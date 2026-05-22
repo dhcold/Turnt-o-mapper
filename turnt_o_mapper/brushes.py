@@ -328,7 +328,6 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
         cx  = (x0 + x1) // 2
         xlo, xhi = cx - hw, cx + hw
         za, zb   = z0, z1
-        bot      = min(za, zb) - H
 
         if za <= zb:
             ramp5(
@@ -343,7 +342,7 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
             ramp5(
                 ((xlo, yhi, zb), (xlo, ylo, za), (xlo, ylo, zb)),
                 ((xlo, ylo, zb), (xlo, ylo, za), (xhi, ylo, za)),
-                ((xlo, yhi, bot), (xlo, ylo, bot), (xhi, ylo, bot)),
+                ((xlo, yhi, zb), (xlo, ylo, zb), (xhi, ylo, zb)),
                 ((xhi, ylo, za), (xlo, ylo, za), (xlo, yhi, zb)),
                 ((xhi, ylo, zb), (xhi, ylo, za), (xhi, yhi, zb)),
                 "ramp",
@@ -372,7 +371,6 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
         cy  = (y0 + y1) // 2
         ylo, yhi = cy - hw, cy + hw
         za, zb   = z0, z1
-        bot      = min(za, zb) - H
 
         if za <= zb:
             ramp5(
@@ -387,7 +385,7 @@ def _ramp_brushes(x0, y0, z0, x1, y1, z1,
             ramp5(
                 ((xlo, ylo, zb), (xlo, ylo, za), (xhi, ylo, za)),
                 ((xlo, yhi, zb), (xlo, yhi, za), (xlo, ylo, zb)),
-                ((xhi, ylo, bot), (xhi, yhi, bot), (xlo, yhi, bot)),
+                ((xhi, ylo, zb), (xhi, yhi, zb), (xlo, yhi, zb)),
                 ((xhi, ylo, zb), (xlo, ylo, za), (xlo, yhi, za)),
                 ((xlo, yhi, zb), (xhi, yhi, zb), (xhi, yhi, za)),
                 "ramp",

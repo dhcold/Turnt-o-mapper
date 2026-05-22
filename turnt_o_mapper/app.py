@@ -1476,6 +1476,11 @@ class App(QMainWindow):
         self._chk_autoupdate.setToolTip("Automatically check for and install updates\nwhen the application starts.")
         self._chk_autoupdate.stateChanged.connect(self._schedule_save)
         lay.addWidget(self._chk_autoupdate)
+        btn_app_folder = QPushButton("Open app folder")
+        btn_app_folder.setObjectName("btnSmall")
+        btn_app_folder.setToolTip("Open the folder containing Turnt-o-mapper.exe")
+        btn_app_folder.clicked.connect(self._on_open_app_folder)
+        lay.addWidget(btn_app_folder)
 
         lay.addWidget(_sec_widget("Appearance"))
         theme_row = QWidget()
@@ -1921,6 +1926,20 @@ class App(QMainWindow):
                 subprocess.run(['xdg-open', folder])
         except Exception as ex:
             self._log(f"Cannot open folder: {ex}", "error")
+
+    def _on_open_app_folder(self):
+        """Open the folder containing the running executable."""
+        if getattr(sys, "frozen", False):
+            folder = os.path.dirname(sys.executable)
+        else:
+            folder = os.path.dirname(os.path.abspath(sys.argv[0]))
+        try:
+            if os.name == 'nt':
+                os.startfile(folder)
+            else:
+                subprocess.run(['xdg-open', folder])
+        except Exception as ex:
+            self._log(f"Cannot open app folder: {ex}", "error")
 
     def _on_launch_game(self):
         exe  = self._edit_game_exe.text().strip()

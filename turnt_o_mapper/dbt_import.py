@@ -554,39 +554,47 @@ def rbe_entities_to_map(entities, sx, sy, sz, opaque_tex="turnt/turnt_concrete")
                 fz = max(MIN_HALF, abs(e.get("yscale", 1.0)) * BASE * EFZ)
 
             # ── 3D rotation helper ────────────────────────────────────
-            # Build rotation matrix from DBT Euler angles (xrot, yrot, zrot)
-            # in radians.  DBT uses intrinsic X→Y→Z convention.
-            # Axis mapping: DBT-X → Q-X, DBT-Z → Q-Y, DBT-Y → Q-Z.
-            # So DBT xrot → pitch (around Q-X), DBT yrot → yaw (around Q-Z),
-            # DBT zrot → roll (around Q-Y).
+            # Strategy: rotate in DBT space with standard RHS CCW
+            # convention, then swap axes to Q3.
+            # DBT axes: X right, Y up, Z forward.
+            # Q3  axes: X right, Y forward, Z up (Y↔Z swap).
+            # Euler order: intrinsic X→Y→Z (pitch, yaw, roll).
+            # This may need adjusting empirically per actual DBT convention.
             xrot = e.get("xrot", 0.0)
             yrot = e.get("yrot", 0.0)
             zrot = e.get("zrot", 0.0)
 
             def _rot3d(lx, ly, lz):
-                """Rotate local offset (lx, ly, lz) by xrot/yrot/zrot.
+                """Rotate Q3-local offset by DBT Euler angles.
 
-                The Y↔Z axis swap (DBT→Q3) has determinant -1, so all
-                rotation angles are effectively negated.  Using CW
-                matrices with the original angles achieves this.
-                Order: Pitch → Yaw → Roll.
+                Steps:
+                  1. Q3 (x,y,z) → DBT (x,z,y)   [undo axis swap]
+                  2. Apply standard CCW rotation in DBT space
+                     (intrinsic X→Y→Z order)
+                  3. DBT (x,y,z) → Q3 (x,z,y)   [re-apply axis swap]
                 """
-                # Pitch — around Q-X, angle = -xrot
+                # Step 1 — undo axis swap
+                dx, dy, dz = lx, lz, ly
+
+                # Step 2 — standard CCW rotations in DBT space
+                # Pitch — around DBT-X
                 cx_, sx_ = math.cos(xrot), math.sin(xrot)
-                x1 =  lx
-                y1 =  cx_ * ly + sx_ * lz
-                z1 = -sx_ * ly + cx_ * lz
-                # Yaw — around Q-Z, angle = -yrot
+                x1 =  dx
+                y1 =  cx_ * dy - sx_ * dz
+                z1 =  sx_ * dy + cx_ * dz
+                # Yaw — around DBT-Y (up)
                 cy_, sy_ = math.cos(yrot), math.sin(yrot)
-                x2 =  cy_ * x1 + sy_ * y1
-                y2 = -sy_ * x1 + cy_ * y1
-                z2 =  z1
-                # Roll — around Q-Y, angle = -zrot
+                x2 =  cy_ * x1 + sy_ * z1
+                y2 =  y1
+                z2 = -sy_ * x1 + cy_ * z1
+                # Roll — around DBT-Z
                 cz_, sz_ = math.cos(zrot), math.sin(zrot)
-                x3 =  cz_ * x2 - sz_ * z2
-                y3 =  y2
-                z3 =  sz_ * x2 + cz_ * z2
-                return (x3, y3, z3)
+                x3 =  cz_ * x2 - sz_ * y2
+                y3 =  sz_ * x2 + cz_ * y2
+                z3 =  z2
+
+                # Step 3 — apply axis swap
+                return (x3, z3, y3)
 
             def _rotated_box(ox, oy, oz, hx, hy, hz, tex, label):
                 """6-face brush: centre (ox,oy,oz), half-extents (hx,hy,hz),
@@ -627,34 +635,33 @@ def rbe_entities_to_map(entities, sx, sy, sz, opaque_tex="turnt/turnt_concrete")
                     qx + dx, qy + dy, qz + dz, hx, hy, hz,
                     prop_tex, f"prop_box_corner {nm}"))
 
-            # ── diagonal: 5-face wedge, anchor at corner ─────────────
-            # Local-space wedge (before rotation):
-            #   Base triangle in XY at Z=0, extruded to Z=fz.
-            #   Vertices: A(0,0,0) B(fx,0,0) C(0,fy,0) + top copies.
-            #   The sloped face goes from edge AB(z=0) to C(z=fz).
+            # ── diagonal: 5-face ramp wedge, anchor at CENTER ──────────
+            # Entity position = center of bounding box.
+            # Slope ascends from (x=-hx, z=-hz) to (x=+hx, z=+hz).
+            # Width from y=-hy to y=+hy.
             elif prop_shape == "diagonal":
-                # 6 local-space vertices of the wedge (anchor at corner)
+                hx, hy, hz = fx / 2, fy / 2, fz / 2
                 local_verts = [
-                    (0,   0,   0),     # 0: base-A
-                    (fx,  0,   0),     # 1: base-B
-                    (0,   fy,  0),     # 2: base-C
-                    (0,   0,   fz),    # 3: top-A
-                    (fx,  0,   fz),    # 4: top-B
-                    (0,   fy,  fz),    # 5: top-C
+                    (-hx, -hy, -hz),   # 0: bottom, slope side, front
+                    (+hx, -hy, -hz),   # 1: bottom, wall side, front
+                    (-hx, +hy, -hz),   # 2: bottom, slope side, back
+                    (+hx, +hy, -hz),   # 3: bottom, wall side, back
+                    (+hx, -hy, +hz),   # 4: top, wall side, front
+                    (+hx, +hy, +hz),   # 5: top, wall side, back
                 ]
-                # Rotate all vertices and offset to world position
                 c = []
                 for lx_, ly_, lz_ in local_verts:
                     dx, dy, dz = _rot3d(lx_, ly_, lz_)
                     c.append((qx + dx, qy + dy, qz + dz))
-                # 5 faces (triangulated quads where needed)
-                f_bot  = face(c[0], c[1], c[2], prop_tex)   # bottom tri
-                f_top  = face(c[5], c[4], c[3], prop_tex)   # top tri
-                f_back = face(c[0], c[3], c[1], prop_tex)   # quad: A-D-E-B (Y=0 side)
-                f_left = face(c[0], c[2], c[3], prop_tex)   # quad: A-C-F-D (X=0 side)
-                f_dia  = face(c[1], c[4], c[2], prop_tex)   # slope: B-E-F-C
+                # 5 faces — each triple gives an inward-pointing normal
+                f_bot   = face(c[0], c[1], c[2], prop_tex)  # bottom
+                f_right = face(c[1], c[4], c[3], prop_tex)  # tall wall
+                f_front = face(c[0], c[4], c[1], prop_tex)  # front tri
+                f_back  = face(c[2], c[3], c[5], prop_tex)  # back tri
+                f_slope = face(c[0], c[2], c[4], prop_tex)  # slope
                 brushes.append(write_brush(
-                    [f_bot, f_top, f_back, f_left, f_dia], f"diag_prop {nm}"))
+                    [f_bot, f_right, f_front, f_back, f_slope],
+                    f"diag_prop {nm}"))
 
             # ── cylinder ─────────────────────────────────────────────
             elif prop_shape == "cylinder":

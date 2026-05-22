@@ -7,23 +7,17 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-
-# Virtual environments
 .venv/
 venv/
 env/
-
-# IDE / editor
 .idea/
 .vscode/
 *.swp
 *.swo
-
-# App-generated files (output maps, user config)
-generated.map
 *.map
 *.rbe
 turnt_config.json
-
-# Claude Code workspace
 .claude/
+scripts/
+maps/
+
