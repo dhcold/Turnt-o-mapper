@@ -2,10 +2,12 @@
 
 > A procedural `.map` file generator and Diabotical importer for the game **Turnt**.
 
-<!-- Insert hero screenshot here -->
-
 Turnt-o-Mapper generates ready-to-play for Turnt / ready-to-compile Quake 3 `.map` files.
 Design a full map layout in seconds: choose room count, dimensions, corridor width, texture sets, and let the generator handle the geometry.
+
+https://github.com/user-attachments/assets/c153efcb-2441-4714-a666-037ab7ca0967
+
+https://github.com/user-attachments/assets/bf2cc399-6ba0-4a6d-8344-d6d4bd615e6f
 
 ---
 
@@ -18,7 +20,7 @@ Design a full map layout in seconds: choose room count, dimensions, corridor wid
 - **Physics model** — acceleration-based speed simulation per room segment
 - **Texture selector** — assign floor / wall / ceiling textures with F/W/C checkboxes; the generator picks one set per map from the enabled pool
 - **Diabotical `.rbe` importer** — import existing DBT maps with configurable XYZ scale
-- **Auto-update** — checks GitHub Releases on startup and downloads new versions automatically
+- **Auto-update** — checks GitHub Releases on startup and downloads new versions automatically (you can opt-out in Settings tab)
 
 ---
 
